@@ -1,9 +1,28 @@
-function doGet(e){
+export function doGet(e) {
+  const folderId = '19PDxxar-38XMlBiYC02lDb1bJh3wJRkh';
+
+  if (!e || !e.parameter || Object.keys(e.parameter).length === 0) {
+    const folder = DriveApp.getFolderById(folderId);
+    const files = folder.getFilesByType(MimeType.CSV);
+    const fileList = [];
+    while (files.hasNext()) {
+      const file = files.next();
+      const fileName = file.getName();
+      // Remove .csv extension (case-insensitive)
+      const nameWithoutExtension = fileName.replace(/\.csv$/i, '');
+      fileList.push(nameWithoutExtension);
+    }
+    return ContentService
+      .createTextOutput(JSON.stringify(fileList))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+
   return ContentService
-  .createTextOutput(JSON.stringify({status:true}))
-  .setMimeType(ContentService.MimeType.JSON);
+    .createTextOutput(JSON.stringify({ status: true }))
+    .setMimeType(ContentService.MimeType.JSON);
 }
-function convertCsvToJsonInFolder() {
+
+export function convertCsvToJsonInFolder() {
   // 1. フォルダIDを指定（フォルダのURLの末尾の部分）
   const folderId = '19PDxxar-38XMlBiYC02lDb1bJh3wJRkh';
   const folder = DriveApp.getFolderById(folderId);
@@ -29,7 +48,7 @@ function convertCsvToJsonInFolder() {
 /**
  * CSV文字列をJSON配列に変換する補助関数
  */
-function parseCsv_(csvString) {
+export function parseCsv_(csvString) {
   const values = Utilities.parseCsv(csvString);
   if (values.length < 2) return [];
 
