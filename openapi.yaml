@@ -1,0 +1,45 @@
+openapi: 3.0.0
+info:
+  title: CSV to JSON API
+  version: 1.0.0
+  description: An API to list CSV files in a Google Drive folder and convert them to JSON.
+servers:
+  - url: https://script.google.com/macros/s/AKfycbxjQAp6rtSCUTz4T5J96_-zCs9Vrae-7uhZXY7ZIukOZP5fs_HIf44aOAfcN3XfPkis/exec
+paths:
+  /:
+    get:
+      summary: Get CSV file list or CSV content as JSON
+      operationId: getCsvData
+      parameters:
+        - name: t
+          in: query
+          description: The name of the CSV file (without .csv extension) to retrieve.
+          required: false
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Successful response
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - type: array
+                    items:
+                      type: string
+                    description: List of CSV file names (when no parameters are provided).
+                  - type: array
+                    items:
+                      type: object
+                      additionalProperties: true
+                    description: Content of the CSV file as a JSON array (when 't' is provided and found).
+                  - type: object
+                    properties:
+                      error:
+                        type: string
+                    description: Error message (when 't' is provided but file is not found).
+                  - type: object
+                    properties:
+                      status:
+                        type: boolean
+                    description: Status (when 't' is missing but other parameters are provided).
