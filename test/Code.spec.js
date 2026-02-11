@@ -76,28 +76,27 @@ describe('Code.js', () => {
   });
 
   describe('doGet', () => {
-    it('should return a list of filenames without .csv when no parameters are provided', () => {
+    it('should return all CSV data keyed by filename when no parameters are provided', () => {
       const e = { parameter: {} };
       Code.doGet(e);
 
       expect(global.DriveApp.getFolderById).toHaveBeenCalledWith('19PDxxar-38XMlBiYC02lDb1bJh3wJRkh');
-      const expectedList = [
-        'assetClassRatio',
-        'other',
-        'breakdown-liability',
-        'details__liability_123',
-        'total-liability',
-        'details__portfolio_456'
-      ];
-      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify(expectedList));
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
+        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
+        other: [{ header1: 'val3', header2: 'val4' }],
+        'breakdown-liability': [{ other: 'val' }],
+        details__liability_123: [{ other: 'val' }],
+        'total-liability': [{ other: 'val' }],
+        details__portfolio_456: [{ other: 'val' }],
+      }));
     });
 
-    it('should return a list of filenames when e is null', () => {
+    it('should return all CSV data when e is null', () => {
       Code.doGet(null);
       expect(global.DriveApp.getFolderById).toHaveBeenCalled();
     });
 
-    it('should return a list of filenames when e.parameter is null', () => {
+    it('should return all CSV data when e.parameter is null', () => {
       Code.doGet({ parameter: null });
       expect(global.DriveApp.getFolderById).toHaveBeenCalled();
     });
@@ -181,6 +180,13 @@ describe('Code.js', () => {
     it('should apply rules for breakdown-liability', () => {
       const data = [{ timestamp: 't', amount_text_num: '1', percentage_text_num: '2', other: 'v' }];
       const result = Code.applyFormattingRules(data, 'breakdown-liability');
+      expect(result[0]).toEqual({ other: 'v' });
+    });
+
+
+    it('should include breakdown formatting for key name breakdown', () => {
+      const data = [{ timestamp: 't', amount_text_num: '1', percentage_text_num: '2', other: 'v' }];
+      const result = Code.applyFormattingRules(data, 'breakdown');
       expect(result[0]).toEqual({ other: 'v' });
     });
 

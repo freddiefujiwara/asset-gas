@@ -8,12 +8,12 @@ servers:
 paths:
   /exec:
     get:
-      summary: Get CSV file list or CSV content as JSON
+      summary: Get all CSV content or specific CSV content as JSON
       operationId: getCsvData
       parameters:
         - name: t
           in: query
-          description: The name of the CSV file (without .csv extension) to retrieve.
+          description: The name of the CSV file (without .csv extension) to retrieve. If omitted, returns all CSV data keyed by filename.
           required: false
           schema:
             type: string
@@ -24,10 +24,13 @@ paths:
             application/json:
               schema:
                 oneOf:
-                  - type: array
-                    items:
-                      type: string
-                    description: List of CSV file names (when no parameters are provided).
+                  - type: object
+                    additionalProperties:
+                      type: array
+                      items:
+                        type: object
+                        additionalProperties: true
+                    description: All CSV contents keyed by filename (when no parameters are provided).
                   - type: array
                     items:
                       type: object

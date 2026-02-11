@@ -37,8 +37,8 @@ export function doGet(e) {
   }
 
   if (isEmptyParameters_(parameters)) {
-    const fileNames = listCsvFileNamesWithoutExtension_();
-    return createJsonResponse_(JSON.stringify(fileNames));
+    const allData = getAllCsvDataInFolder_();
+    return createJsonResponse_(JSON.stringify(allData));
   }
 
   return createJsonResponse_(JSON.stringify({ status: true }));
@@ -127,16 +127,19 @@ function getCsvFilesIterator_() {
   return folder.getFilesByType(getMimeTypes_().csv);
 }
 
-function listCsvFileNamesWithoutExtension_() {
+function getAllCsvDataInFolder_() {
   const files = getCsvFilesIterator_();
-  const fileNames = [];
+  const allData = {};
 
   while (files.hasNext()) {
     const file = files.next();
-    fileNames.push(removeCsvExtension_(file.getName()));
+    const typeName = removeCsvExtension_(file.getName());
+    const csvContent = file.getBlob().getDataAsString('UTF-8');
+    const parsedRows = parseCsv_(csvContent);
+    allData[typeName] = applyFormattingRules(parsedRows, typeName);
   }
 
-  return fileNames;
+  return allData;
 }
 
 function findCsvFileByName_(targetFileNameLowerCase) {
