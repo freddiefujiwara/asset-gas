@@ -4,9 +4,9 @@ info:
   version: 1.0.0
   description: An API to list CSV files in a Google Drive folder and convert them to JSON.
 servers:
-  - url: https://script.google.com/macros/s/AKfycbxjQAp6rtSCUTz4T5J96_-zCs9Vrae-7uhZXY7ZIukOZP5fs_HIf44aOAfcN3XfPkis/exec
+  - url: https://script.google.com/macros/s/AKfycbxjQAp6rtSCUTz4T5J96_-zCs9Vrae-7uhZXY7ZIukOZP5fs_HIf44aOAfcN3XfPkis
 paths:
-  /:
+  /exec:
     get:
       summary: Get CSV file list or CSV content as JSON
       operationId: getCsvData
