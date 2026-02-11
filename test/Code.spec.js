@@ -24,6 +24,7 @@ describe('Code.js', () => {
 
     // Mock CacheService
     const mockCache = {
+      get: vi.fn(() => null),
       removeAll: vi.fn(),
       put: vi.fn(),
     };
@@ -110,6 +111,21 @@ describe('Code.js', () => {
       expect(global.DriveApp.getFolderById).toHaveBeenCalled();
     });
 
+
+    it('should return cached all data when no parameters are provided and cache exists', () => {
+      const cachePayload = JSON.stringify({ assetClassRatio: [{ cached: true }] });
+      const cache = global.CacheService.getScriptCache();
+      cache.get.mockImplementation((key) => (key === '0' ? cachePayload : null));
+
+      Code.doGet({ parameter: {} });
+
+      expect(cache.get).toHaveBeenCalledWith('0');
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(cachePayload);
+      expect(global.DriveApp.getFolderById).not.toHaveBeenCalled();
+      expect(cache.put).not.toHaveBeenCalled();
+    });
+
+
     it('should return specific file content when t parameter is provided', () => {
       const e = { parameter: { t: 'assetClassRatio' } };
       Code.doGet(e);
@@ -117,11 +133,43 @@ describe('Code.js', () => {
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify([{ other: 'val', amount_yen: '20' }]));
     });
 
+
+    it('should return cached data for t parameter when cache exists', () => {
+      const cachePayload = JSON.stringify([{ cached: true }]);
+      const cache = global.CacheService.getScriptCache();
+      cache.get.mockImplementation((key) => (key === 'assetClassRatio' ? cachePayload : null));
+
+      const e = { parameter: { t: 'assetClassRatio' } };
+      Code.doGet(e);
+
+      expect(cache.get).toHaveBeenCalledWith('assetClassRatio');
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(cachePayload);
+      expect(cache.put).not.toHaveBeenCalled();
+    });
+
+
     it('should be case-insensitive to extension when retrieving file via t parameter', () => {
       const e = { parameter: { t: 'other' } };
       Code.doGet(e);
 
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify([{ header1: 'val3', header2: 'val4' }]));
+    });
+
+
+    it('should fallback to folder data when CacheService is unavailable', () => {
+      delete global.CacheService;
+
+      Code.doGet({ parameter: {} });
+
+      expect(global.DriveApp.getFolderById).toHaveBeenCalled();
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
+        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
+        other: [{ header1: 'val3', header2: 'val4' }],
+        'breakdown-liability': [{ other: 'val' }],
+        details__liability_123: [{ other: 'val' }],
+        'total-liability': [{ other: 'val' }],
+        details__portfolio_456: [{ other: 'val' }],
+      }));
     });
 
     it('should return status true when other parameters are provided', () => {

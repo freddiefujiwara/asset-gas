@@ -54,10 +54,20 @@ export function doGet(e) {
   const parameters = e?.parameter;
 
   if (parameters?.t) {
+    const cachedData = getCacheValue_(parameters.t);
+    if (cachedData !== null) {
+      return createJsonResponse_(cachedData);
+    }
+
     return createJsonResponse_(convertCsvToJsonInFolder(parameters.t));
   }
 
   if (isEmptyParameters_(parameters)) {
+    const cachedAllData = getCacheValue_('0');
+    if (cachedAllData !== null) {
+      return createJsonResponse_(cachedAllData);
+    }
+
     const allData = getAllCsvDataInFolder_();
     return createJsonResponse_(JSON.stringify(allData));
   }
@@ -120,6 +130,25 @@ export function applyFormattingRules(data, typeName) {
 
     return clonedItem;
   });
+}
+
+function getScriptCache_() {
+  if (typeof CacheService === 'undefined' || !CacheService.getScriptCache) {
+    return null;
+  }
+
+  return CacheService.getScriptCache();
+}
+
+function getCacheValue_(key) {
+  const cache = getScriptCache_();
+
+  if (!cache || !cache.get) {
+    return null;
+  }
+
+  const value = cache.get(key);
+  return value === null ? null : value;
 }
 
 function getMimeTypes_() {
