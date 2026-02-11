@@ -1,51 +1,93 @@
+const FOLDER_ID = '19PDxxar-38XMlBiYC02lDb1bJh3wJRkh';
+const MAX_CACHE_DURATION_SECONDS = 21600;
+
+const FORMAT_RULES = [
+  {
+    match: (typeName) => typeName === 'breakdown-liability' || typeName === 'breakdown',
+    remove: ['timestamp', 'amount_text_num', 'percentage_text_num'],
+  },
+  {
+    match: (typeName) => typeName.startsWith('details__liability'),
+    remove: ['timestamp', 'detail_id', 'table_index', '残高_yen'],
+  },
+  {
+    match: (typeName) => typeName === 'total-liability',
+    remove: ['timestamp', 'total_text_num'],
+  },
+  {
+    match: (typeName) => typeName === 'assetClassRatio',
+    remove: ['timestamp'],
+    transform: (item) => {
+      if (Object.prototype.hasOwnProperty.call(item, 'y')) {
+        item.amount_yen = item.y;
+        delete item.y;
+      }
+    },
+  },
+  {
+    match: (typeName) => typeName.startsWith('details__portfolio'),
+    remove: ['timestamp', 'detail_id', 'table_index'],
+  },
+];
+
+
+export function preCacheAll() {
+  const cache = CacheService.getScriptCache();
+  const allEntries = getAllCsvDataEntries_();
+  const allData = entriesToObject_(allEntries);
+  const cacheKeys = ['0', ...allEntries.map((entry) => entry.typeName)];
+
+  cache.removeAll(cacheKeys);
+  cache.put('0', JSON.stringify(allData), MAX_CACHE_DURATION_SECONDS);
+
+  allEntries.forEach((entry) => {
+    cache.put(entry.typeName, JSON.stringify(entry.data), MAX_CACHE_DURATION_SECONDS);
+  });
+
+  return {
+    status: true,
+    cachedKeys: cacheKeys,
+  };
+}
+
 export function doGet(e) {
-  const folderId = '19PDxxar-38XMlBiYC02lDb1bJh3wJRkh';
+  const parameters = e?.parameter;
 
-  if (e && e.parameter && e.parameter.t) {
-    const jsonString = convertCsvToJsonInFolder(e.parameter.t);
-    return ContentService
-      .createTextOutput(jsonString)
-      .setMimeType(ContentService.MimeType.JSON);
-  }
-
-  if (!e || !e.parameter || Object.keys(e.parameter).length === 0) {
-    const folder = DriveApp.getFolderById(folderId);
-    const files = folder.getFilesByType(MimeType.CSV);
-    const fileList = [];
-    while (files.hasNext()) {
-      const file = files.next();
-      const fileName = file.getName();
-      // Remove .csv extension (case-insensitive)
-      const nameWithoutExtension = fileName.replace(/\.csv$/i, '');
-      fileList.push(nameWithoutExtension);
+  if (parameters?.t) {
+    const cachedData = getCacheValue_(parameters.t);
+    if (cachedData !== null) {
+      return createJsonResponse_(cachedData);
     }
-    return ContentService
-      .createTextOutput(JSON.stringify(fileList))
-      .setMimeType(ContentService.MimeType.JSON);
+
+    return createJsonResponse_(convertCsvToJsonInFolder(parameters.t));
   }
 
-  return ContentService
-    .createTextOutput(JSON.stringify({ status: true }))
-    .setMimeType(ContentService.MimeType.JSON);
+  if (isEmptyParameters_(parameters)) {
+    const cachedAllData = getCacheValue_('0');
+    if (cachedAllData !== null) {
+      return createJsonResponse_(cachedAllData);
+    }
+
+    const allData = getAllCsvDataInFolder_();
+    return createJsonResponse_(JSON.stringify(allData));
+  }
+
+  return createJsonResponse_(JSON.stringify({ status: true }));
 }
 
 export function convertCsvToJsonInFolder(typeName) {
-  const folderId = '19PDxxar-38XMlBiYC02lDb1bJh3wJRkh';
-  const folder = DriveApp.getFolderById(folderId);
-  const files = folder.getFilesByType(MimeType.CSV);
-  const targetName = (typeName + '.csv').toLowerCase();
+  const targetName = toCsvFileName_(typeName);
+  const csvFile = findCsvFileByName_(targetName);
 
-  while (files.hasNext()) {
-    const file = files.next();
-    if (file.getName().toLowerCase() === targetName) {
-      const csvData = file.getBlob().getDataAsString('UTF-8');
-      let jsonContent = parseCsv_(csvData);
-      jsonContent = applyFormattingRules(jsonContent, typeName);
-      return JSON.stringify(jsonContent);
-    }
+  if (!csvFile) {
+    return JSON.stringify({ error: `File not found: ${typeName}` });
   }
 
-  return JSON.stringify({ error: 'File not found: ' + typeName });
+  const csvContent = csvFile.getBlob().getDataAsString('UTF-8');
+  const parsedRows = parseCsv_(csvContent);
+  const formattedRows = applyFormattingRules(parsedRows, typeName);
+
+  return JSON.stringify(formattedRows);
 }
 
 /**
@@ -53,53 +95,148 @@ export function convertCsvToJsonInFolder(typeName) {
  */
 export function parseCsv_(csvString) {
   const values = Utilities.parseCsv(csvString);
-  if (values.length < 2) return [];
 
-  const headers = values[0];
-  const rows = values.slice(1);
+  if (values.length < 2) {
+    return [];
+  }
 
-  return rows.map(row => {
-    const obj = {};
-    headers.forEach((header, index) => {
-      obj[header] = row[index];
-    });
-    return obj;
-  });
+  const [headers, ...rows] = values;
+
+  return rows.map((row) => mapRowToObject_(headers, row));
 }
 
 /**
  * tの値に基づいてデータを整形する
  */
 export function applyFormattingRules(data, typeName) {
-  if (!Array.isArray(data)) return data;
+  if (!Array.isArray(data)) {
+    return data;
+  }
 
-  return data.map(item => {
-    const newItem = { ...item };
+  const activeRule = FORMAT_RULES.find((rule) => rule.match(typeName));
 
-    if (typeName === 'breakdown-liability') {
-      delete newItem['timestamp'];
-      delete newItem['amount_text_num'];
-      delete newItem['percentage_text_num'];
-    } else if (typeName.startsWith('details__liability')) {
-      delete newItem['timestamp'];
-      delete newItem['detail_id'];
-      delete newItem['table_index'];
-      delete newItem['残高_yen'];
-    } else if (typeName === 'total-liability') {
-      delete newItem['timestamp'];
-      delete newItem['total_text_num'];
-    } else if (typeName === 'assetClassRatio') {
-      delete newItem['timestamp'];
-      if (newItem.hasOwnProperty('y')) {
-        newItem['amount_yen'] = newItem['y'];
-        delete newItem['y'];
-      }
-    } else if (typeName.startsWith('details__portfolio')) {
-      delete newItem['timestamp'];
-      delete newItem['detail_id'];
-      delete newItem['table_index'];
+  return data.map((item) => {
+    const clonedItem = { ...item };
+
+    if (!activeRule) {
+      return clonedItem;
     }
 
-    return newItem;
+    removeKeys_(clonedItem, activeRule.remove);
+
+    if (activeRule.transform) {
+      activeRule.transform(clonedItem);
+    }
+
+    return clonedItem;
+  });
+}
+
+function getScriptCache_() {
+  if (typeof CacheService === 'undefined' || !CacheService.getScriptCache) {
+    return null;
+  }
+
+  return CacheService.getScriptCache();
+}
+
+function getCacheValue_(key) {
+  const cache = getScriptCache_();
+
+  if (!cache || !cache.get) {
+    return null;
+  }
+
+  const value = cache.get(key);
+  return value === null ? null : value;
+}
+
+function getMimeTypes_() {
+  return {
+    csv: MimeType.CSV,
+    json: ContentService.MimeType.JSON,
+  };
+}
+
+function createJsonResponse_(jsonString) {
+  return ContentService
+    .createTextOutput(jsonString)
+    .setMimeType(getMimeTypes_().json);
+}
+
+function isEmptyParameters_(parameters) {
+  if (!parameters) {
+    return true;
+  }
+
+  return Object.keys(parameters).length === 0;
+}
+
+function getCsvFilesIterator_() {
+  const folder = DriveApp.getFolderById(FOLDER_ID);
+  return folder.getFilesByType(getMimeTypes_().csv);
+}
+
+function getAllCsvDataInFolder_() {
+  const allEntries = getAllCsvDataEntries_();
+  return entriesToObject_(allEntries);
+}
+
+function getAllCsvDataEntries_() {
+  const files = getCsvFilesIterator_();
+  const entries = [];
+
+  while (files.hasNext()) {
+    const file = files.next();
+    const typeName = removeCsvExtension_(file.getName());
+    const csvContent = file.getBlob().getDataAsString('UTF-8');
+    const parsedRows = parseCsv_(csvContent);
+    entries.push({
+      typeName,
+      data: applyFormattingRules(parsedRows, typeName),
+    });
+  }
+
+  return entries;
+}
+
+function entriesToObject_(entries) {
+  return entries.reduce((acc, entry) => {
+    acc[entry.typeName] = entry.data;
+    return acc;
+  }, {});
+}
+
+function findCsvFileByName_(targetFileNameLowerCase) {
+  const files = getCsvFilesIterator_();
+
+  while (files.hasNext()) {
+    const file = files.next();
+    if (file.getName().toLowerCase() === targetFileNameLowerCase) {
+      return file;
+    }
+  }
+
+  return null;
+}
+
+function removeCsvExtension_(fileName) {
+  return fileName.replace(/\.csv$/i, '');
+}
+
+function toCsvFileName_(typeName) {
+  return `${typeName}.csv`.toLowerCase();
+}
+
+function mapRowToObject_(headers, row) {
+  return headers.reduce((acc, header, index) => {
+    acc[header] = row[index];
+    return acc;
+  }, {});
+}
+
+function removeKeys_(object, keys = []) {
+  keys.forEach((key) => {
+    delete object[key];
   });
 }

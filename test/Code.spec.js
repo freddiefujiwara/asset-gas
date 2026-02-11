@@ -22,6 +22,16 @@ describe('Code.js', () => {
       createTextOutput: vi.fn().mockReturnValue(mockTextOutput),
     };
 
+    // Mock CacheService
+    const mockCache = {
+      get: vi.fn(() => null),
+      removeAll: vi.fn(),
+      put: vi.fn(),
+    };
+    global.CacheService = {
+      getScriptCache: vi.fn(() => mockCache),
+    };
+
     // Mock Utilities
     global.Utilities = {
       parseCsv: vi.fn((csv) => {
@@ -76,31 +86,45 @@ describe('Code.js', () => {
   });
 
   describe('doGet', () => {
-    it('should return a list of filenames without .csv when no parameters are provided', () => {
+    it('should return all CSV data keyed by filename when no parameters are provided', () => {
       const e = { parameter: {} };
       Code.doGet(e);
 
       expect(global.DriveApp.getFolderById).toHaveBeenCalledWith('19PDxxar-38XMlBiYC02lDb1bJh3wJRkh');
-      const expectedList = [
-        'assetClassRatio',
-        'other',
-        'breakdown-liability',
-        'details__liability_123',
-        'total-liability',
-        'details__portfolio_456'
-      ];
-      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify(expectedList));
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
+        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
+        other: [{ header1: 'val3', header2: 'val4' }],
+        'breakdown-liability': [{ other: 'val' }],
+        details__liability_123: [{ other: 'val' }],
+        'total-liability': [{ other: 'val' }],
+        details__portfolio_456: [{ other: 'val' }],
+      }));
     });
 
-    it('should return a list of filenames when e is null', () => {
+    it('should return all CSV data when e is null', () => {
       Code.doGet(null);
       expect(global.DriveApp.getFolderById).toHaveBeenCalled();
     });
 
-    it('should return a list of filenames when e.parameter is null', () => {
+    it('should return all CSV data when e.parameter is null', () => {
       Code.doGet({ parameter: null });
       expect(global.DriveApp.getFolderById).toHaveBeenCalled();
     });
+
+
+    it('should return cached all data when no parameters are provided and cache exists', () => {
+      const cachePayload = JSON.stringify({ assetClassRatio: [{ cached: true }] });
+      const cache = global.CacheService.getScriptCache();
+      cache.get.mockImplementation((key) => (key === '0' ? cachePayload : null));
+
+      Code.doGet({ parameter: {} });
+
+      expect(cache.get).toHaveBeenCalledWith('0');
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(cachePayload);
+      expect(global.DriveApp.getFolderById).not.toHaveBeenCalled();
+      expect(cache.put).not.toHaveBeenCalled();
+    });
+
 
     it('should return specific file content when t parameter is provided', () => {
       const e = { parameter: { t: 'assetClassRatio' } };
@@ -109,6 +133,21 @@ describe('Code.js', () => {
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify([{ other: 'val', amount_yen: '20' }]));
     });
 
+
+    it('should return cached data for t parameter when cache exists', () => {
+      const cachePayload = JSON.stringify([{ cached: true }]);
+      const cache = global.CacheService.getScriptCache();
+      cache.get.mockImplementation((key) => (key === 'assetClassRatio' ? cachePayload : null));
+
+      const e = { parameter: { t: 'assetClassRatio' } };
+      Code.doGet(e);
+
+      expect(cache.get).toHaveBeenCalledWith('assetClassRatio');
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(cachePayload);
+      expect(cache.put).not.toHaveBeenCalled();
+    });
+
+
     it('should be case-insensitive to extension when retrieving file via t parameter', () => {
       const e = { parameter: { t: 'other' } };
       Code.doGet(e);
@@ -116,11 +155,76 @@ describe('Code.js', () => {
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify([{ header1: 'val3', header2: 'val4' }]));
     });
 
+
+    it('should fallback to folder data when CacheService is unavailable', () => {
+      delete global.CacheService;
+
+      Code.doGet({ parameter: {} });
+
+      expect(global.DriveApp.getFolderById).toHaveBeenCalled();
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
+        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
+        other: [{ header1: 'val3', header2: 'val4' }],
+        'breakdown-liability': [{ other: 'val' }],
+        details__liability_123: [{ other: 'val' }],
+        'total-liability': [{ other: 'val' }],
+        details__portfolio_456: [{ other: 'val' }],
+      }));
+    });
+
     it('should return status true when other parameters are provided', () => {
       const e = { parameter: { unknown: 'value' } };
       Code.doGet(e);
 
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({ status: true }));
+    });
+  });
+
+
+  describe('preCacheAll', () => {
+    it('should clear and put all cache entries with 6 hour ttl', () => {
+      const result = Code.preCacheAll();
+      const cache = global.CacheService.getScriptCache();
+
+      expect(global.CacheService.getScriptCache).toHaveBeenCalled();
+      expect(cache.removeAll).toHaveBeenCalledWith([
+        '0',
+        'assetClassRatio',
+        'other',
+        'breakdown-liability',
+        'details__liability_123',
+        'total-liability',
+        'details__portfolio_456',
+      ]);
+
+      expect(cache.put).toHaveBeenCalledWith('0', JSON.stringify({
+        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
+        other: [{ header1: 'val3', header2: 'val4' }],
+        'breakdown-liability': [{ other: 'val' }],
+        details__liability_123: [{ other: 'val' }],
+        'total-liability': [{ other: 'val' }],
+        details__portfolio_456: [{ other: 'val' }],
+      }), 21600);
+
+      expect(cache.put).toHaveBeenCalledWith('assetClassRatio', JSON.stringify([{ other: 'val', amount_yen: '20' }]), 21600);
+      expect(cache.put).toHaveBeenCalledWith('other', JSON.stringify([{ header1: 'val3', header2: 'val4' }]), 21600);
+      expect(cache.put).toHaveBeenCalledWith('breakdown-liability', JSON.stringify([{ other: 'val' }]), 21600);
+      expect(cache.put).toHaveBeenCalledWith('details__liability_123', JSON.stringify([{ other: 'val' }]), 21600);
+      expect(cache.put).toHaveBeenCalledWith('total-liability', JSON.stringify([{ other: 'val' }]), 21600);
+      expect(cache.put).toHaveBeenCalledWith('details__portfolio_456', JSON.stringify([{ other: 'val' }]), 21600);
+
+      expect(result).toEqual({
+        status: true,
+        cachedKeys: [
+          '0',
+          'assetClassRatio',
+          'other',
+          'breakdown-liability',
+          'details__liability_123',
+          'total-liability',
+          'details__portfolio_456',
+        ],
+      });
     });
   });
 
@@ -181,6 +285,13 @@ describe('Code.js', () => {
     it('should apply rules for breakdown-liability', () => {
       const data = [{ timestamp: 't', amount_text_num: '1', percentage_text_num: '2', other: 'v' }];
       const result = Code.applyFormattingRules(data, 'breakdown-liability');
+      expect(result[0]).toEqual({ other: 'v' });
+    });
+
+
+    it('should include breakdown formatting for key name breakdown', () => {
+      const data = [{ timestamp: 't', amount_text_num: '1', percentage_text_num: '2', other: 'v' }];
+      const result = Code.applyFormattingRules(data, 'breakdown');
       expect(result[0]).toEqual({ other: 'v' });
     });
 
