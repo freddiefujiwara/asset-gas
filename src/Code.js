@@ -39,7 +39,8 @@ export function convertCsvToJsonInFolder(typeName) {
     const file = files.next();
     if (file.getName().toLowerCase() === targetName) {
       const csvData = file.getBlob().getDataAsString('UTF-8');
-      const jsonContent = parseCsv_(csvData);
+      let jsonContent = parseCsv_(csvData);
+      jsonContent = applyFormattingRules(jsonContent, typeName);
       return JSON.stringify(jsonContent);
     }
   }
@@ -63,5 +64,42 @@ export function parseCsv_(csvString) {
       obj[header] = row[index];
     });
     return obj;
+  });
+}
+
+/**
+ * tの値に基づいてデータを整形する
+ */
+export function applyFormattingRules(data, typeName) {
+  if (!Array.isArray(data)) return data;
+
+  return data.map(item => {
+    const newItem = { ...item };
+
+    if (typeName === 'breakdown-liability') {
+      delete newItem['timestamp'];
+      delete newItem['amount_text_num'];
+      delete newItem['percentage_text_num'];
+    } else if (typeName.startsWith('details__liability')) {
+      delete newItem['timestamp'];
+      delete newItem['detail_id'];
+      delete newItem['table_index'];
+      delete newItem['残高_yen'];
+    } else if (typeName === 'total-liability') {
+      delete newItem['timestamp'];
+      delete newItem['total_text_num'];
+    } else if (typeName === 'assetClassRatio') {
+      delete newItem['timestamp'];
+      if (newItem.hasOwnProperty('y')) {
+        newItem['amount_yen'] = newItem['y'];
+        delete newItem['y'];
+      }
+    } else if (typeName.startsWith('details__portfolio')) {
+      delete newItem['timestamp'];
+      delete newItem['detail_id'];
+      delete newItem['table_index'];
+    }
+
+    return newItem;
   });
 }
