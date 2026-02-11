@@ -22,6 +22,15 @@ describe('Code.js', () => {
       createTextOutput: vi.fn().mockReturnValue(mockTextOutput),
     };
 
+    // Mock CacheService
+    const mockCache = {
+      removeAll: vi.fn(),
+      put: vi.fn(),
+    };
+    global.CacheService = {
+      getScriptCache: vi.fn(() => mockCache),
+    };
+
     // Mock Utilities
     global.Utilities = {
       parseCsv: vi.fn((csv) => {
@@ -120,6 +129,54 @@ describe('Code.js', () => {
       Code.doGet(e);
 
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({ status: true }));
+    });
+  });
+
+
+  describe('preCacheAll', () => {
+    it('should clear and put all cache entries with 6 hour ttl', () => {
+      const result = Code.preCacheAll();
+      const cache = global.CacheService.getScriptCache();
+
+      expect(global.CacheService.getScriptCache).toHaveBeenCalled();
+      expect(cache.removeAll).toHaveBeenCalledWith([
+        '0',
+        'assetClassRatio',
+        'other',
+        'breakdown-liability',
+        'details__liability_123',
+        'total-liability',
+        'details__portfolio_456',
+      ]);
+
+      expect(cache.put).toHaveBeenCalledWith('0', JSON.stringify({
+        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
+        other: [{ header1: 'val3', header2: 'val4' }],
+        'breakdown-liability': [{ other: 'val' }],
+        details__liability_123: [{ other: 'val' }],
+        'total-liability': [{ other: 'val' }],
+        details__portfolio_456: [{ other: 'val' }],
+      }), 21600);
+
+      expect(cache.put).toHaveBeenCalledWith('assetClassRatio', JSON.stringify([{ other: 'val', amount_yen: '20' }]), 21600);
+      expect(cache.put).toHaveBeenCalledWith('other', JSON.stringify([{ header1: 'val3', header2: 'val4' }]), 21600);
+      expect(cache.put).toHaveBeenCalledWith('breakdown-liability', JSON.stringify([{ other: 'val' }]), 21600);
+      expect(cache.put).toHaveBeenCalledWith('details__liability_123', JSON.stringify([{ other: 'val' }]), 21600);
+      expect(cache.put).toHaveBeenCalledWith('total-liability', JSON.stringify([{ other: 'val' }]), 21600);
+      expect(cache.put).toHaveBeenCalledWith('details__portfolio_456', JSON.stringify([{ other: 'val' }]), 21600);
+
+      expect(result).toEqual({
+        status: true,
+        cachedKeys: [
+          '0',
+          'assetClassRatio',
+          'other',
+          'breakdown-liability',
+          'details__liability_123',
+          'total-liability',
+          'details__portfolio_456',
+        ],
+      });
     });
   });
 

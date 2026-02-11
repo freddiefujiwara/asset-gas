@@ -1,4 +1,5 @@
 const FOLDER_ID = '19PDxxar-38XMlBiYC02lDb1bJh3wJRkh';
+const MAX_CACHE_DURATION_SECONDS = 21600;
 
 const FORMAT_RULES = [
   {
@@ -28,6 +29,26 @@ const FORMAT_RULES = [
     remove: ['timestamp', 'detail_id', 'table_index'],
   },
 ];
+
+
+export function preCacheAll() {
+  const cache = CacheService.getScriptCache();
+  const allEntries = getAllCsvDataEntries_();
+  const allData = entriesToObject_(allEntries);
+  const cacheKeys = ['0', ...allEntries.map((entry) => entry.typeName)];
+
+  cache.removeAll(cacheKeys);
+  cache.put('0', JSON.stringify(allData), MAX_CACHE_DURATION_SECONDS);
+
+  allEntries.forEach((entry) => {
+    cache.put(entry.typeName, JSON.stringify(entry.data), MAX_CACHE_DURATION_SECONDS);
+  });
+
+  return {
+    status: true,
+    cachedKeys: cacheKeys,
+  };
+}
 
 export function doGet(e) {
   const parameters = e?.parameter;
@@ -128,18 +149,33 @@ function getCsvFilesIterator_() {
 }
 
 function getAllCsvDataInFolder_() {
+  const allEntries = getAllCsvDataEntries_();
+  return entriesToObject_(allEntries);
+}
+
+function getAllCsvDataEntries_() {
   const files = getCsvFilesIterator_();
-  const allData = {};
+  const entries = [];
 
   while (files.hasNext()) {
     const file = files.next();
     const typeName = removeCsvExtension_(file.getName());
     const csvContent = file.getBlob().getDataAsString('UTF-8');
     const parsedRows = parseCsv_(csvContent);
-    allData[typeName] = applyFormattingRules(parsedRows, typeName);
+    entries.push({
+      typeName,
+      data: applyFormattingRules(parsedRows, typeName),
+    });
   }
 
-  return allData;
+  return entries;
+}
+
+function entriesToObject_(entries) {
+  return entries.reduce((acc, entry) => {
+    acc[entry.typeName] = entry.data;
+    return acc;
+  }, {});
 }
 
 function findCsvFileByName_(targetFileNameLowerCase) {
