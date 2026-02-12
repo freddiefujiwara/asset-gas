@@ -238,6 +238,35 @@ describe('Code.js', () => {
       );
     });
 
+    it('should support id_token query parameter when authorization header is missing', () => {
+      scriptProperties.DEBUG = 'false';
+      Code.doGet({
+        parameter: { id_token: 'token-from-query' },
+        headers: {},
+      });
+
+      expect(global.UrlFetchApp.fetch).toHaveBeenCalledWith(
+        'https://oauth2.googleapis.com/tokeninfo?id_token=token-from-query',
+        { muteHttpExceptions: true },
+      );
+    });
+
+    it('should return all CSV data when only id_token parameter is provided', () => {
+      scriptProperties.DEBUG = 'false';
+      Code.doGet({
+        parameter: { id_token: 'token-from-query' },
+        headers: {},
+      });
+
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
+        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
+        other: [{ header1: 'val3', header2: 'val4' }],
+        'breakdown-liability': [{ other: 'val' }],
+        details__liability_123: [{ other: 'val' }],
+        'total-liability': [{ other: 'val' }],
+        details__portfolio_456: [{ other: 'val' }],
+      }));
+    });
 
     it('should return 401 when event is undefined in non-debug mode', () => {
       scriptProperties.DEBUG = 'false';
