@@ -51,28 +51,39 @@ export function preCacheAll() {
 }
 
 export function doGet(e) {
-  const parameters = e?.parameter;
-
-  if (parameters?.t) {
-    const cachedData = getCacheValue_(parameters.t);
-    if (cachedData !== null) {
-      return createJsonResponse_(cachedData);
+  try {
+    if (!isDebugMode_()) {
+      const idToken = extractBearerToken_(e);
+      verifyGoogleIdTokenOrThrow_(idToken);
     }
 
-    return createJsonResponse_(convertCsvToJsonInFolder(parameters.t));
-  }
+    const parameters = e?.parameter;
 
-  if (isEmptyParameters_(parameters)) {
-    const cachedAllData = getCacheValue_('0');
-    if (cachedAllData !== null) {
-      return createJsonResponse_(cachedAllData);
+    if (parameters?.t) {
+      const cachedData = getCacheValue_(parameters.t);
+      if (cachedData !== null) {
+        return createJsonResponse_(cachedData);
+      }
+
+      return createJsonResponse_(convertCsvToJsonInFolder(parameters.t));
     }
 
-    const allData = getAllCsvDataInFolder_();
-    return createJsonResponse_(JSON.stringify(allData));
-  }
+    if (isEmptyParameters_(parameters)) {
+      const cachedAllData = getCacheValue_('0');
+      if (cachedAllData !== null) {
+        return createJsonResponse_(cachedAllData);
+      }
 
-  return createJsonResponse_(JSON.stringify({ status: true }));
+      const allData = getAllCsvDataInFolder_();
+      return createJsonResponse_(JSON.stringify(allData));
+    }
+
+    return createJsonResponse_(JSON.stringify({ status: true }));
+  } catch (error) {
+    const message = error?.message || 'unauthorized';
+    const status = message === 'forbidden email' ? 403 : 401;
+    return createJsonResponse_(JSON.stringify({ status, error: message }));
+  }
 }
 
 export function convertCsvToJsonInFolder(typeName) {
@@ -239,4 +250,94 @@ function removeKeys_(object, keys = []) {
   keys.forEach((key) => {
     delete object[key];
   });
+}
+
+function getScriptProperties_() {
+  if (typeof PropertiesService === 'undefined' || !PropertiesService.getScriptProperties) {
+    return null;
+  }
+
+  return PropertiesService.getScriptProperties();
+}
+
+function getScriptProperty_(key) {
+  const properties = getScriptProperties_();
+  if (!properties || !properties.getProperty) {
+    return '';
+  }
+
+  return properties.getProperty(key) || '';
+}
+
+function isDebugMode_() {
+  return getScriptProperty_('DEBUG') === 'true';
+}
+
+function extractBearerToken_(event) {
+  const headers = event?.headers || {};
+  const auth = headers.Authorization || headers.authorization || '';
+  const match = auth.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1] : '';
+}
+
+function getAllowedEmails_() {
+  return getScriptProperty_('AVAILABLE_GMAILS')
+    .split(',')
+    .map((s) => s.trim().toLowerCase())
+    .filter(Boolean);
+}
+
+function verifyGoogleIdTokenOrThrow_(idToken) {
+  if (!idToken) {
+    throw new Error('missing id token');
+  }
+
+  const oauthClientId = getScriptProperty_('GOOGLE_OAUTH_CLIENT_ID');
+  if (!oauthClientId) {
+    throw new Error('missing GOOGLE_OAUTH_CLIENT_ID');
+  }
+
+  const response = UrlFetchApp.fetch(
+    `https://oauth2.googleapis.com/tokeninfo?id_token=${encodeURIComponent(idToken)}`,
+    { muteHttpExceptions: true },
+  );
+
+  if (response.getResponseCode() !== 200) {
+    throw new Error('token verification failed');
+  }
+
+  const payload = JSON.parse(response.getContentText());
+
+  const validIssuer = payload.iss === 'accounts.google.com'
+    || payload.iss === 'https://accounts.google.com';
+  if (!validIssuer) {
+    throw new Error('invalid iss');
+  }
+
+  if (payload.aud !== oauthClientId) {
+    throw new Error('invalid aud');
+  }
+
+  const expSeconds = Number(payload.exp || 0);
+  const nowSeconds = Math.floor(Date.now() / 1000);
+  if (!Number.isFinite(expSeconds) || expSeconds <= nowSeconds) {
+    throw new Error('token expired');
+  }
+
+  const emailVerified = payload.email_verified === true || payload.email_verified === 'true';
+  if (!emailVerified) {
+    throw new Error('email not verified');
+  }
+
+  const email = String(payload.email || '').toLowerCase();
+  if (!email) {
+    throw new Error('missing email');
+  }
+
+  const allowed = getAllowedEmails_();
+  if (!allowed.includes(email)) {
+    throw new Error('forbidden email');
+  }
+
+  return { email, sub: payload.sub };
 }
