@@ -53,7 +53,7 @@ export function preCacheAll() {
 export function doGet(e) {
   try {
     if (!isDebugMode_()) {
-      const idToken = extractBearerToken_(e);
+      const idToken = extractIdToken_(e);
       verifyGoogleIdTokenOrThrow_(idToken);
     }
 
@@ -273,11 +273,13 @@ function isDebugMode_() {
   return getScriptProperty_('DEBUG') === 'true';
 }
 
-function extractBearerToken_(event) {
+function extractIdToken_(event) {
   const headers = event?.headers || {};
   const auth = headers.Authorization || headers.authorization || '';
-  const match = auth.match(/^Bearer\s+(.+)$/i);
-  return match ? match[1] : '';
+  const bearer = auth.match(/^Bearer\s+(.+)$/i);
+  if (bearer) return bearer[1];
+
+  return event?.parameter?.id_token || '';
 }
 
 function getAllowedEmails_() {

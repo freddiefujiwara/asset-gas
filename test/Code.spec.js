@@ -238,6 +238,19 @@ describe('Code.js', () => {
       );
     });
 
+    it('should support id_token query parameter when authorization header is missing', () => {
+      scriptProperties.DEBUG = 'false';
+      Code.doGet({
+        parameter: { id_token: 'token-from-query' },
+        headers: {},
+      });
+
+      expect(global.UrlFetchApp.fetch).toHaveBeenCalledWith(
+        'https://oauth2.googleapis.com/tokeninfo?id_token=token-from-query',
+        { muteHttpExceptions: true },
+      );
+    });
+
 
     it('should return 401 when event is undefined in non-debug mode', () => {
       scriptProperties.DEBUG = 'false';
