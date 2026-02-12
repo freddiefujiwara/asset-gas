@@ -31,7 +31,7 @@ const FORMAT_RULES = [
 ];
 
 
-export function reCacheAll() {
+export function preCacheAll() {
   const cache = CacheService.getScriptCache();
   const allEntries = getAllCsvDataEntries_();
   const allData = entriesToObject_(allEntries);
@@ -51,7 +51,7 @@ export function doGet(e) {
     const parameters = e?.parameter;
 
     if (parameters?.f === 'preCacheAll') {
-      return createJsonResponse_(JSON.stringify(reCacheAll()));
+      return createJsonResponse_(JSON.stringify(preCacheAll()));
     }
 
     if (!isDebugMode_()) {

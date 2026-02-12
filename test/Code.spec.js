@@ -469,9 +469,9 @@ describe('Code.js', () => {
   });
 
 
-  describe('reCacheAll', () => {
+  describe('preCacheAll', () => {
     it('should clear and put all cache entries with 6 hour ttl', () => {
-      const result = Code.reCacheAll();
+      const result = Code.preCacheAll();
       const cache = global.CacheService.getScriptCache();
 
       expect(global.CacheService.getScriptCache).toHaveBeenCalled();
