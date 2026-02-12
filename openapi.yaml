@@ -10,6 +10,18 @@ paths:
     get:
       summary: Get all CSV content as JSON
       operationId: getCsvData
+      parameters:
+        - name: f
+          in: query
+          schema:
+            type: string
+            enum: [preCacheAll]
+          description: Function to execute
+        - name: id_token
+          in: query
+          schema:
+            type: string
+          description: Google ID Token for authentication
       responses:
         '200':
           description: Successful response

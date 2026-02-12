@@ -31,7 +31,7 @@ const FORMAT_RULES = [
 ];
 
 
-export function preCacheAll() {
+export function reCacheAll() {
   const cache = CacheService.getScriptCache();
   const allEntries = getAllCsvDataEntries_();
   const allData = entriesToObject_(allEntries);
@@ -48,12 +48,16 @@ export function preCacheAll() {
 
 export function doGet(e) {
   try {
+    const parameters = e?.parameter;
+
+    if (parameters?.f === 'preCacheAll') {
+      return createJsonResponse_(JSON.stringify(reCacheAll()));
+    }
+
     if (!isDebugMode_()) {
       const idToken = extractIdToken_(e);
       verifyGoogleIdTokenOrThrow_(idToken);
     }
-
-    const parameters = e?.parameter;
 
     if (isEmptyParameters_(parameters)) {
       const cachedAllData = getCacheValue_('0');
