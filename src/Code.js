@@ -180,7 +180,8 @@ function isEmptyParameters_(parameters) {
     return true;
   }
 
-  return Object.keys(parameters).length === 0;
+  const keys = Object.keys(parameters).filter((key) => key !== 'id_token');
+  return keys.length === 0;
 }
 
 function getCsvFilesIterator_() {
