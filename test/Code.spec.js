@@ -154,34 +154,6 @@ describe('Code.js', () => {
     });
 
 
-    it('should return specific file content when t parameter is provided', () => {
-      const e = { parameter: { t: 'assetClassRatio' } };
-      Code.doGet(e);
-
-      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify([{ other: 'val', amount_yen: '20' }]));
-    });
-
-
-    it('should return cached data for t parameter when cache exists', () => {
-      const cachePayload = JSON.stringify([{ cached: true }]);
-      const cache = global.CacheService.getScriptCache();
-      cache.get.mockImplementation((key) => (key === 'assetClassRatio' ? cachePayload : null));
-
-      const e = { parameter: { t: 'assetClassRatio' } };
-      Code.doGet(e);
-
-      expect(cache.get).toHaveBeenCalledWith('assetClassRatio');
-      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(cachePayload);
-      expect(cache.put).not.toHaveBeenCalled();
-    });
-
-
-    it('should be case-insensitive to extension when retrieving file via t parameter', () => {
-      const e = { parameter: { t: 'other' } };
-      Code.doGet(e);
-
-      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify([{ header1: 'val3', header2: 'val4' }]));
-    });
 
 
     it('should fallback to folder data when CacheService is unavailable', () => {
@@ -490,15 +462,7 @@ describe('Code.js', () => {
       const cache = global.CacheService.getScriptCache();
 
       expect(global.CacheService.getScriptCache).toHaveBeenCalled();
-      expect(cache.removeAll).toHaveBeenCalledWith([
-        '0',
-        'assetClassRatio',
-        'other',
-        'breakdown-liability',
-        'details__liability_123',
-        'total-liability',
-        'details__portfolio_456',
-      ]);
+      expect(cache.removeAll).toHaveBeenCalledWith(['0']);
 
       expect(cache.put).toHaveBeenCalledWith('0', JSON.stringify({
         assetClassRatio: [{ other: 'val', amount_yen: '20' }],
@@ -509,42 +473,12 @@ describe('Code.js', () => {
         details__portfolio_456: [{ other: 'val' }],
       }), 21600);
 
-      expect(cache.put).toHaveBeenCalledWith('assetClassRatio', JSON.stringify([{ other: 'val', amount_yen: '20' }]), 21600);
-      expect(cache.put).toHaveBeenCalledWith('other', JSON.stringify([{ header1: 'val3', header2: 'val4' }]), 21600);
-      expect(cache.put).toHaveBeenCalledWith('breakdown-liability', JSON.stringify([{ other: 'val' }]), 21600);
-      expect(cache.put).toHaveBeenCalledWith('details__liability_123', JSON.stringify([{ other: 'val' }]), 21600);
-      expect(cache.put).toHaveBeenCalledWith('total-liability', JSON.stringify([{ other: 'val' }]), 21600);
-      expect(cache.put).toHaveBeenCalledWith('details__portfolio_456', JSON.stringify([{ other: 'val' }]), 21600);
+      expect(cache.put).toHaveBeenCalledTimes(1);
 
       expect(result).toEqual({
         status: true,
-        cachedKeys: [
-          '0',
-          'assetClassRatio',
-          'other',
-          'breakdown-liability',
-          'details__liability_123',
-          'total-liability',
-          'details__portfolio_456',
-        ],
+        cachedKeys: ['0'],
       });
-    });
-  });
-
-  describe('convertCsvToJsonInFolder', () => {
-    it('should return JSON string for found file', () => {
-      const result = Code.convertCsvToJsonInFolder('assetClassRatio');
-      expect(result).toBe(JSON.stringify([{ other: 'val', amount_yen: '20' }]));
-    });
-
-    it('should handle case-insensitive extensions', () => {
-      const result = Code.convertCsvToJsonInFolder('other');
-      expect(result).toBe(JSON.stringify([{ header1: 'val3', header2: 'val4' }]));
-    });
-
-    it('should return error message for non-existent file', () => {
-      const result = Code.convertCsvToJsonInFolder('nonexistent');
-      expect(result).toBe(JSON.stringify({ error: 'File not found: nonexistent' }));
     });
   });
 

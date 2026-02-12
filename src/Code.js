@@ -35,14 +35,10 @@ export function preCacheAll() {
   const cache = CacheService.getScriptCache();
   const allEntries = getAllCsvDataEntries_();
   const allData = entriesToObject_(allEntries);
-  const cacheKeys = ['0', ...allEntries.map((entry) => entry.typeName)];
+  const cacheKeys = ['0'];
 
   cache.removeAll(cacheKeys);
   cache.put('0', JSON.stringify(allData), MAX_CACHE_DURATION_SECONDS);
-
-  allEntries.forEach((entry) => {
-    cache.put(entry.typeName, JSON.stringify(entry.data), MAX_CACHE_DURATION_SECONDS);
-  });
 
   return {
     status: true,
@@ -58,15 +54,6 @@ export function doGet(e) {
     }
 
     const parameters = e?.parameter;
-
-    if (parameters?.t) {
-      const cachedData = getCacheValue_(parameters.t);
-      if (cachedData !== null) {
-        return createJsonResponse_(cachedData);
-      }
-
-      return createJsonResponse_(convertCsvToJsonInFolder(parameters.t));
-    }
 
     if (isEmptyParameters_(parameters)) {
       const cachedAllData = getCacheValue_('0');
@@ -84,21 +71,6 @@ export function doGet(e) {
     const status = message === 'forbidden email' ? 403 : 401;
     return createJsonResponse_(JSON.stringify({ status, error: message }));
   }
-}
-
-export function convertCsvToJsonInFolder(typeName) {
-  const targetName = toCsvFileName_(typeName);
-  const csvFile = findCsvFileByName_(targetName);
-
-  if (!csvFile) {
-    return JSON.stringify({ error: `File not found: ${typeName}` });
-  }
-
-  const csvContent = csvFile.getBlob().getDataAsString('UTF-8');
-  const parsedRows = parseCsv_(csvContent);
-  const formattedRows = applyFormattingRules(parsedRows, typeName);
-
-  return JSON.stringify(formattedRows);
 }
 
 /**
@@ -219,25 +191,8 @@ function entriesToObject_(entries) {
   }, {});
 }
 
-function findCsvFileByName_(targetFileNameLowerCase) {
-  const files = getCsvFilesIterator_();
-
-  while (files.hasNext()) {
-    const file = files.next();
-    if (file.getName().toLowerCase() === targetFileNameLowerCase) {
-      return file;
-    }
-  }
-
-  return null;
-}
-
 function removeCsvExtension_(fileName) {
   return fileName.replace(/\.csv$/i, '');
-}
-
-function toCsvFileName_(typeName) {
-  return `${typeName}.csv`.toLowerCase();
 }
 
 function mapRowToObject_(headers, row) {

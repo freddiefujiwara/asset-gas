@@ -7,17 +7,11 @@ The CSV files are stored in a specific Google Drive folder.
 
 You can use the API by sending a GET request to the Web App URL.
 
-### 1. Get a list of files
-If you do not provide any parameters, the API returns a list of all CSV file names in the folder.
+### 1. Get all CSV data
+If you do not provide any parameters, the API returns the content of all CSV files in the folder, keyed by their filename.
 
 Example:
 `https://script.google.com/macros/s/.../exec`
-
-### 2. Get file content
-If you provide the `t` parameter with a file name (without `.csv`), the API returns the content of that file as JSON.
-
-Example:
-`https://script.google.com/macros/s/.../exec?t=total-liability`
 
 The API also cleans up the data based on the file name (for example, it removes timestamps or renames fields).
 

@@ -8,15 +8,8 @@ servers:
 paths:
   /exec:
     get:
-      summary: Get all CSV content or specific CSV content as JSON
+      summary: Get all CSV content as JSON
       operationId: getCsvData
-      parameters:
-        - name: t
-          in: query
-          description: The name of the CSV file (without .csv extension) to retrieve. If omitted, returns all CSV data keyed by filename.
-          required: false
-          schema:
-            type: string
       responses:
         '200':
           description: Successful response
@@ -30,19 +23,9 @@ paths:
                       items:
                         type: object
                         additionalProperties: true
-                    description: All CSV contents keyed by filename (when no parameters are provided).
-                  - type: array
-                    items:
-                      type: object
-                      additionalProperties: true
-                    description: Content of the CSV file as a JSON array (when 't' is provided and found).
-                  - type: object
-                    properties:
-                      error:
-                        type: string
-                    description: Error message (when 't' is provided but file is not found).
+                    description: All CSV contents keyed by filename.
                   - type: object
                     properties:
                       status:
                         type: boolean
-                    description: Status (when 't' is missing but other parameters are provided).
+                    description: Status (when other parameters are provided).
