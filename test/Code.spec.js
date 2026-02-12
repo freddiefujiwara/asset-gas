@@ -453,6 +453,19 @@ describe('Code.js', () => {
         JSON.stringify({ status: 401, error: 'missing id token' }),
       );
     });
+
+    it('should handle f=preCacheAll and bypass auth', () => {
+      scriptProperties.DEBUG = 'false';
+      const e = { parameter: { f: 'preCacheAll' } };
+      Code.doGet(e);
+
+      expect(global.UrlFetchApp.fetch).not.toHaveBeenCalled();
+      expect(global.CacheService.getScriptCache).toHaveBeenCalled();
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
+        status: true,
+        cachedKeys: ['0'],
+      }));
+    });
   });
 
 
