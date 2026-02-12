@@ -42,3 +42,16 @@ The API also cleans up the data based on the file name (for example, it removes 
   ```bash
   npm run deploy
   ```
+
+### Scope changes (`AUTH 401` for `UrlFetchApp.fetch`)
+If you add or change `oauthScopes` in `appsscript.json` (for example `https://www.googleapis.com/auth/script.external_request`),
+`clasp push` alone is not enough for an already published Web App deployment.
+
+After `npm run deploy`, run:
+
+```bash
+clasp version "update scopes"
+clasp deploy --deploymentId <your-webapp-deployment-id>
+```
+
+Then re-authorize once with the **deploying account** (because this project uses `executeAs: USER_DEPLOYING`).
