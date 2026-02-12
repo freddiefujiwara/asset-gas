@@ -2,8 +2,36 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import * as Code from '../src/Code.js';
 
 describe('Code.js', () => {
+  let scriptProperties;
+
   beforeEach(() => {
     vi.resetAllMocks();
+
+    scriptProperties = {
+      DEBUG: 'true',
+      AVAILABLE_GMAILS: 'allowed@example.com',
+      GOOGLE_OAUTH_CLIENT_ID: 'client-id',
+    };
+
+    global.PropertiesService = {
+      getScriptProperties: vi.fn(() => ({
+        getProperty: vi.fn((key) => scriptProperties[key] ?? ''),
+      })),
+    };
+
+    global.UrlFetchApp = {
+      fetch: vi.fn(() => ({
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({
+          iss: 'accounts.google.com',
+          aud: 'client-id',
+          exp: `${Math.floor(Date.now() / 1000) + 3600}`,
+          email_verified: 'true',
+          email: 'allowed@example.com',
+          sub: 'sub-id',
+        }),
+      })),
+    };
 
     // Mock MimeType
     global.MimeType = {
@@ -177,6 +205,252 @@ describe('Code.js', () => {
       Code.doGet(e);
 
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({ status: true }));
+    });
+
+    it('should skip auth when DEBUG is true', () => {
+      Code.doGet({ parameter: {} });
+      expect(global.UrlFetchApp.fetch).not.toHaveBeenCalled();
+    });
+
+    it('should validate auth token when DEBUG is not true', () => {
+      scriptProperties.DEBUG = 'false';
+      Code.doGet({
+        parameter: {},
+        headers: { Authorization: 'Bearer token-value' },
+      });
+
+      expect(global.UrlFetchApp.fetch).toHaveBeenCalledWith(
+        'https://oauth2.googleapis.com/tokeninfo?id_token=token-value',
+        { muteHttpExceptions: true },
+      );
+    });
+
+    it('should support lowercase authorization header', () => {
+      scriptProperties.DEBUG = 'false';
+      Code.doGet({
+        parameter: {},
+        headers: { authorization: 'Bearer token-lowercase' },
+      });
+
+      expect(global.UrlFetchApp.fetch).toHaveBeenCalledWith(
+        'https://oauth2.googleapis.com/tokeninfo?id_token=token-lowercase',
+        { muteHttpExceptions: true },
+      );
+    });
+
+
+    it('should return 401 when event is undefined in non-debug mode', () => {
+      scriptProperties.DEBUG = 'false';
+      Code.doGet(undefined);
+
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 401, error: 'missing id token' }),
+      );
+    });
+
+    it('should return 401 when bearer token is missing', () => {
+      scriptProperties.DEBUG = 'false';
+      Code.doGet({ parameter: {}, headers: {} });
+
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 401, error: 'missing id token' }),
+      );
+    });
+
+    it('should return 401 when GOOGLE_OAUTH_CLIENT_ID is missing', () => {
+      scriptProperties.DEBUG = 'false';
+      scriptProperties.GOOGLE_OAUTH_CLIENT_ID = '';
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token' } });
+
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 401, error: 'missing GOOGLE_OAUTH_CLIENT_ID' }),
+      );
+    });
+
+    it('should return 401 when token verification fails', () => {
+      scriptProperties.DEBUG = 'false';
+      global.UrlFetchApp.fetch.mockReturnValueOnce({
+        getResponseCode: () => 400,
+        getContentText: () => '',
+      });
+
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token' } });
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 401, error: 'token verification failed' }),
+      );
+    });
+
+    it('should return 401 for invalid issuer', () => {
+      scriptProperties.DEBUG = 'false';
+      global.UrlFetchApp.fetch.mockReturnValueOnce({
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({
+          iss: 'bad-issuer',
+          aud: 'client-id',
+          exp: `${Math.floor(Date.now() / 1000) + 3600}`,
+          email_verified: 'true',
+          email: 'allowed@example.com',
+        }),
+      });
+
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token' } });
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 401, error: 'invalid iss' }),
+      );
+    });
+
+    it('should return 401 for invalid audience', () => {
+      scriptProperties.DEBUG = 'false';
+      global.UrlFetchApp.fetch.mockReturnValueOnce({
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({
+          iss: 'accounts.google.com',
+          aud: 'invalid-aud',
+          exp: `${Math.floor(Date.now() / 1000) + 3600}`,
+          email_verified: 'true',
+          email: 'allowed@example.com',
+        }),
+      });
+
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token' } });
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 401, error: 'invalid aud' }),
+      );
+    });
+
+    it('should return 401 for expired tokens', () => {
+      scriptProperties.DEBUG = 'false';
+      global.UrlFetchApp.fetch.mockReturnValueOnce({
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({
+          iss: 'accounts.google.com',
+          aud: 'client-id',
+          exp: `${Math.floor(Date.now() / 1000) - 1}`,
+          email_verified: 'true',
+          email: 'allowed@example.com',
+        }),
+      });
+
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token' } });
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 401, error: 'token expired' }),
+      );
+    });
+
+    it('should return 401 for non numeric exp', () => {
+      scriptProperties.DEBUG = 'false';
+      global.UrlFetchApp.fetch.mockReturnValueOnce({
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({
+          iss: 'accounts.google.com',
+          aud: 'client-id',
+          exp: 'abc',
+          email_verified: 'true',
+          email: 'allowed@example.com',
+        }),
+      });
+
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token' } });
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 401, error: 'token expired' }),
+      );
+    });
+
+
+    it('should return 401 when exp is missing', () => {
+      scriptProperties.DEBUG = 'false';
+      global.UrlFetchApp.fetch.mockReturnValueOnce({
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({
+          iss: 'accounts.google.com',
+          aud: 'client-id',
+          email_verified: 'true',
+          email: 'allowed@example.com',
+        }),
+      });
+
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token' } });
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 401, error: 'token expired' }),
+      );
+    });
+
+    it('should return 401 when email is not verified', () => {
+      scriptProperties.DEBUG = 'false';
+      global.UrlFetchApp.fetch.mockReturnValueOnce({
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({
+          iss: 'accounts.google.com',
+          aud: 'client-id',
+          exp: `${Math.floor(Date.now() / 1000) + 3600}`,
+          email_verified: 'false',
+          email: 'allowed@example.com',
+        }),
+      });
+
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token' } });
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 401, error: 'email not verified' }),
+      );
+    });
+
+    it('should return 401 when email is missing', () => {
+      scriptProperties.DEBUG = 'false';
+      global.UrlFetchApp.fetch.mockReturnValueOnce({
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({
+          iss: 'accounts.google.com',
+          aud: 'client-id',
+          exp: `${Math.floor(Date.now() / 1000) + 3600}`,
+          email_verified: true,
+          email: '',
+        }),
+      });
+
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token' } });
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 401, error: 'missing email' }),
+      );
+    });
+
+    it('should return 403 for non-whitelisted email', () => {
+      scriptProperties.DEBUG = 'false';
+      scriptProperties.AVAILABLE_GMAILS = 'other@example.com';
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token' } });
+
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 403, error: 'forbidden email' }),
+      );
+    });
+
+    it('should allow trimmed and lower-cased whitelist entries', () => {
+      scriptProperties.DEBUG = 'false';
+      scriptProperties.AVAILABLE_GMAILS = '  ALLOWED@example.com  , second@example.com';
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token' } });
+
+      expect(global.DriveApp.getFolderById).toHaveBeenCalled();
+    });
+
+    it('should return unauthorized when non-Error is thrown', () => {
+      scriptProperties.DEBUG = 'false';
+      global.UrlFetchApp.fetch.mockImplementationOnce(() => {
+        throw 'boom';
+      });
+
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token' } });
+
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 401, error: 'unauthorized' }),
+      );
+    });
+
+    it('should treat missing PropertiesService as non-debug mode', () => {
+      delete global.PropertiesService;
+      Code.doGet({ parameter: {}, headers: {} });
+
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 401, error: 'missing id token' }),
+      );
     });
   });
 
