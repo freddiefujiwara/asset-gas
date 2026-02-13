@@ -270,8 +270,7 @@ function getAllXmlDataEntriesByMonth_() {
   return xmlFiles.map((item) => {
     try {
       const xmlContent = item.file.getBlob().getDataAsString('UTF-8');
-      const year = item.yyyymm.substring(0, 4);
-      const entries = parseMfcfXml_(xmlContent, year);
+      const entries = parseMfcfXml_(xmlContent, item.yyyymm);
       return {
         key: `mfcf.${item.yyyymm}`,
         entries,
@@ -347,27 +346,28 @@ function parseMfcfXml_(xmlContent, defaultYear) {
 function formatDate_(pubDate, defaultYear) {
   if (!pubDate) return '';
 
+  const fallbackYear = extractYearFromFileTag_(defaultYear);
+
+  // YYYY/MM/DD 形式または YYYY-MM-DD 形式は、明示年を優先して採用する
+  const explicitYmdMatch = pubDate.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
+  if (explicitYmdMatch) {
+    const yyyy = explicitYmdMatch[1];
+    const mm = explicitYmdMatch[2].padStart(2, '0');
+    const dd = explicitYmdMatch[3].padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
   // MM/DD 形式で年が含まれていない場合、defaultYear を付加する
-  let normalizedPubDate = pubDate;
   const mmddMatch = pubDate.match(/^(\d{1,2})\/(\d{1,2})/);
   if (mmddMatch && !/\d{4}/.test(pubDate)) {
-    const year = defaultYear || new Date().getFullYear();
+    const year = fallbackYear || new Date().getFullYear();
     const mm = mmddMatch[1].padStart(2, '0');
     const dd = mmddMatch[2].padStart(2, '0');
     return `${year}-${mm}-${dd}`;
   }
 
-  // YYYY/MM/DD 形式の場合、直接 YYYY-MM-DD に変換する (タイムゾーンによるズレを避けるため)
-  const yyyymmddMatch = pubDate.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})/);
-  if (yyyymmddMatch) {
-    const yyyy = yyyymmddMatch[1];
-    const mm = yyyymmddMatch[2].padStart(2, '0');
-    const dd = yyyymmddMatch[3].padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
-  }
-
   try {
-    const d = new Date(normalizedPubDate);
+    const d = new Date(pubDate);
     if (isNaN(d.getTime())) return '';
     const yyyy = d.getUTCFullYear();
     const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
@@ -376,6 +376,23 @@ function formatDate_(pubDate, defaultYear) {
   } catch (e) {
     return '';
   }
+}
+
+function extractYearFromFileTag_(fileTag) {
+  if (!fileTag) return '';
+
+  const normalized = String(fileTag);
+  const yyyymmMatch = normalized.match(/^(\d{4})\d{2}$/);
+  if (yyyymmMatch) {
+    return yyyymmMatch[1];
+  }
+
+  const yyyyMatch = normalized.match(/^(\d{4})$/);
+  if (yyyyMatch) {
+    return yyyyMatch[1];
+  }
+
+  return '';
 }
 
 function mapRowToObject_(headers, row) {
