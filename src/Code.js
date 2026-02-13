@@ -250,7 +250,7 @@ function getAllXmlDataEntriesByMonth_() {
   const folder = DriveApp.getFolderById(FOLDER_ID);
   const files = folder.getFiles();
   const xmlFiles = [];
-  const regex = /^mfcf\.?(\d{6})\.xml$/i;
+  const regex = /^mfcf\.(\d{6})\.xml$/;
 
   while (files.hasNext()) {
     const file = files.next();
