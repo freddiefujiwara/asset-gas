@@ -346,10 +346,13 @@ function parseMfcfXml_(xmlContent, defaultYear) {
 function formatDate_(pubDate, defaultYear) {
   if (!pubDate) return '';
 
+  const normalizedPubDate = String(pubDate).trim();
+  if (!normalizedPubDate) return '';
+
   const fallbackYear = extractYearFromFileTag_(defaultYear);
 
   // YYYY/MM/DD 形式または YYYY-MM-DD 形式は、明示年を優先して採用する
-  const explicitYmdMatch = pubDate.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
+  const explicitYmdMatch = normalizedPubDate.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
   if (explicitYmdMatch) {
     const yyyy = explicitYmdMatch[1];
     const mm = explicitYmdMatch[2].padStart(2, '0');
@@ -358,8 +361,8 @@ function formatDate_(pubDate, defaultYear) {
   }
 
   // MM/DD 形式で年が含まれていない場合、defaultYear を付加する
-  const mmddMatch = pubDate.match(/^(\d{1,2})\/(\d{1,2})/);
-  if (mmddMatch && !/\d{4}/.test(pubDate)) {
+  const mmddMatch = normalizedPubDate.match(/(\d{1,2})\/(\d{1,2})/);
+  if (mmddMatch && !/\d{4}/.test(normalizedPubDate)) {
     const year = fallbackYear || new Date().getFullYear();
     const mm = mmddMatch[1].padStart(2, '0');
     const dd = mmddMatch[2].padStart(2, '0');
@@ -367,7 +370,7 @@ function formatDate_(pubDate, defaultYear) {
   }
 
   try {
-    const d = new Date(pubDate);
+    const d = new Date(normalizedPubDate);
     if (isNaN(d.getTime())) return '';
     const yyyy = d.getUTCFullYear();
     const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
