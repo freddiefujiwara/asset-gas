@@ -238,6 +238,76 @@ describe('Code.js', () => {
       expect(result[2].amount).toBe(-1000);
     });
 
+    it('should correctly interpret MM/DD using the year from filename', () => {
+      const mockXmlFiles = [
+        {
+          getName: () => 'mfcf.202512.xml',
+          getBlob: () => ({
+            getDataAsString: () => `
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>12/25(木) -¥1,000 TEST</title>
+      <pubDate>12/25</pubDate>
+      <description><![CDATA[ date: 12/25(木) amount: -¥1,000 category: Category is_transfer: false ]]></description>
+    </item>
+  </channel>
+</rss>`
+          })
+        }
+      ];
+
+      const createMockFiles = (filesArray) => {
+        let index = 0;
+        return {
+          hasNext: vi.fn(() => index < filesArray.length),
+          next: vi.fn(() => filesArray[index++]),
+        };
+      };
+
+      global.DriveApp.getFolderById.mockReturnValueOnce({
+        getFiles: vi.fn(() => createMockFiles(mockXmlFiles))
+      });
+
+      const result = Code.getAllXmlDataEntries_();
+      expect(result[0].date).toBe('2025-12-25');
+    });
+
+    it('should prioritize explicit YYYY/MM/DD even if filename has different year', () => {
+      const mockXmlFiles = [
+        {
+          getName: () => 'mfcf.202501.xml',
+          getBlob: () => ({
+            getDataAsString: () => `
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>12/31(火) -¥1,000 TEST</title>
+      <pubDate>2024/12/31</pubDate>
+      <description><![CDATA[ date: 12/31(火) amount: -¥1,000 category: Category is_transfer: false ]]></description>
+    </item>
+  </channel>
+</rss>`
+          })
+        }
+      ];
+
+      const createMockFiles = (filesArray) => {
+        let index = 0;
+        return {
+          hasNext: vi.fn(() => index < filesArray.length),
+          next: vi.fn(() => filesArray[index++]),
+        };
+      };
+
+      global.DriveApp.getFolderById.mockReturnValueOnce({
+        getFiles: vi.fn(() => createMockFiles(mockXmlFiles))
+      });
+
+      const result = Code.getAllXmlDataEntries_();
+      expect(result[0].date).toBe('2024-12-31');
+    });
+
     it('should handle invalid XML gracefully', () => {
       const mockXmlFiles = [
         {

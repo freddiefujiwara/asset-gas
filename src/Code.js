@@ -270,7 +270,8 @@ function getAllXmlDataEntriesByMonth_() {
   return xmlFiles.map((item) => {
     try {
       const xmlContent = item.file.getBlob().getDataAsString('UTF-8');
-      const entries = parseMfcfXml_(xmlContent);
+      const year = item.yyyymm.substring(0, 4);
+      const entries = parseMfcfXml_(xmlContent, year);
       return {
         key: `mfcf.${item.yyyymm}`,
         entries,
@@ -296,7 +297,7 @@ export function getAllXmlDataEntries_() {
 /**
  * XML(RSS 2.0)をパースしてオブジェクトの配列に変換する
  */
-function parseMfcfXml_(xmlContent) {
+function parseMfcfXml_(xmlContent, defaultYear) {
   const document = XmlService.parse(xmlContent);
   const root = document.getRootElement();
   const channel = root.getChild('channel');
@@ -330,7 +331,7 @@ function parseMfcfXml_(xmlContent) {
     const is_transfer = isTransferMatch ? isTransferMatch[1] === 'true' : false;
 
     return {
-      date: formatDate_(pubDate),
+      date: formatDate_(pubDate, defaultYear),
       amount,
       currency: 'JPY',
       name,
@@ -343,9 +344,30 @@ function parseMfcfXml_(xmlContent) {
 /**
  * pubDateをYYYY-MM-DD形式に変換する
  */
-function formatDate_(pubDate) {
+function formatDate_(pubDate, defaultYear) {
+  if (!pubDate) return '';
+
+  // MM/DD 形式で年が含まれていない場合、defaultYear を付加する
+  let normalizedPubDate = pubDate;
+  const mmddMatch = pubDate.match(/^(\d{1,2})\/(\d{1,2})/);
+  if (mmddMatch && !/\d{4}/.test(pubDate)) {
+    const year = defaultYear || new Date().getFullYear();
+    const mm = mmddMatch[1].padStart(2, '0');
+    const dd = mmddMatch[2].padStart(2, '0');
+    return `${year}-${mm}-${dd}`;
+  }
+
+  // YYYY/MM/DD 形式の場合、直接 YYYY-MM-DD に変換する (タイムゾーンによるズレを避けるため)
+  const yyyymmddMatch = pubDate.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})/);
+  if (yyyymmddMatch) {
+    const yyyy = yyyymmddMatch[1];
+    const mm = yyyymmddMatch[2].padStart(2, '0');
+    const dd = yyyymmddMatch[3].padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
   try {
-    const d = new Date(pubDate);
+    const d = new Date(normalizedPubDate);
     if (isNaN(d.getTime())) return '';
     const yyyy = d.getUTCFullYear();
     const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
