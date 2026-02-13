@@ -270,8 +270,7 @@ function getAllXmlDataEntriesByMonth_() {
   return xmlFiles.map((item) => {
     try {
       const xmlContent = item.file.getBlob().getDataAsString('UTF-8');
-      const year = item.yyyymm.substring(0, 4);
-      const entries = parseMfcfXml_(xmlContent, year);
+      const entries = parseMfcfXml_(xmlContent, item.yyyymm);
       return {
         key: `mfcf.${item.yyyymm}`,
         entries,
@@ -331,7 +330,7 @@ function parseMfcfXml_(xmlContent, defaultYear) {
     const is_transfer = isTransferMatch ? isTransferMatch[1] === 'true' : false;
 
     return {
-      date: formatDate_(pubDate, defaultYear),
+      date: formatDate_(pickDateText_(description, title, pubDate), defaultYear),
       amount,
       currency: 'JPY',
       name,
@@ -341,29 +340,58 @@ function parseMfcfXml_(xmlContent, defaultYear) {
   });
 }
 
+
+function pickDateText_(description, title, pubDate) {
+  const normalizedPubDate = String(pubDate || '').trim();
+
+  // pubDate自体が YYYY/MM/DD or YYYY-MM-DD の場合はそれを優先する
+  if (/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/.test(normalizedPubDate)) {
+    return normalizedPubDate;
+  }
+
+  // 明細の取引日(date:)を優先する
+  const descriptionDateMatch = String(description || '').match(/date:\s*((?:\d{4}[\/-])?\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{1,2})?)/);
+  if (descriptionDateMatch) {
+    return descriptionDateMatch[1];
+  }
+
+  // title先頭の MM/DD などをフォールバックで使う
+  const titleDateMatch = String(title || '').match(/^(\d{1,4}[\/-]\d{1,2}(?:[\/-]\d{1,2})?)/);
+  if (titleDateMatch) {
+    return titleDateMatch[1];
+  }
+
+  // 最後の手段としてpubDateを使う
+  return normalizedPubDate;
+}
+
 /**
  * pubDateをYYYY-MM-DD形式に変換する
  */
 function formatDate_(pubDate, defaultYear) {
   if (!pubDate) return '';
 
+  const normalizedPubDate = String(pubDate).trim();
+  if (!normalizedPubDate) return '';
+
+  const fallbackYear = extractYearFromFileTag_(defaultYear);
+
+  // YYYY/MM/DD 形式または YYYY-MM-DD 形式は、明示年を優先して採用する
+  const explicitYmdMatch = normalizedPubDate.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/);
+  if (explicitYmdMatch) {
+    const yyyy = explicitYmdMatch[1];
+    const mm = explicitYmdMatch[2].padStart(2, '0');
+    const dd = explicitYmdMatch[3].padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  }
+
   // MM/DD 形式で年が含まれていない場合、defaultYear を付加する
-  let normalizedPubDate = pubDate;
-  const mmddMatch = pubDate.match(/^(\d{1,2})\/(\d{1,2})/);
-  if (mmddMatch && !/\d{4}/.test(pubDate)) {
-    const year = defaultYear || new Date().getFullYear();
+  const mmddMatch = normalizedPubDate.match(/(\d{1,2})\/(\d{1,2})/);
+  if (mmddMatch && !/\d{4}/.test(normalizedPubDate)) {
+    const year = fallbackYear || new Date().getFullYear();
     const mm = mmddMatch[1].padStart(2, '0');
     const dd = mmddMatch[2].padStart(2, '0');
     return `${year}-${mm}-${dd}`;
-  }
-
-  // YYYY/MM/DD 形式の場合、直接 YYYY-MM-DD に変換する (タイムゾーンによるズレを避けるため)
-  const yyyymmddMatch = pubDate.match(/^(\d{4})\/(\d{1,2})\/(\d{1,2})/);
-  if (yyyymmddMatch) {
-    const yyyy = yyyymmddMatch[1];
-    const mm = yyyymmddMatch[2].padStart(2, '0');
-    const dd = yyyymmddMatch[3].padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
   }
 
   try {
@@ -376,6 +404,23 @@ function formatDate_(pubDate, defaultYear) {
   } catch (e) {
     return '';
   }
+}
+
+function extractYearFromFileTag_(fileTag) {
+  if (!fileTag) return '';
+
+  const normalized = String(fileTag);
+  const yyyymmMatch = normalized.match(/^(\d{4})\d{2}$/);
+  if (yyyymmMatch) {
+    return yyyymmMatch[1];
+  }
+
+  const yyyyMatch = normalized.match(/^(\d{4})$/);
+  if (yyyyMatch) {
+    return yyyyMatch[1];
+  }
+
+  return '';
 }
 
 function mapRowToObject_(headers, row) {

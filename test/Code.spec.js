@@ -273,6 +273,42 @@ describe('Code.js', () => {
       expect(result[0].date).toBe('2025-12-25');
     });
 
+    it('should interpret MM/DD with leading spaces using the year from filename', () => {
+      const mockXmlFiles = [
+        {
+          getName: () => 'mfcf.202512.xml',
+          getBlob: () => ({
+            getDataAsString: () => `
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>12/25(木) -¥1,000 TEST</title>
+      <pubDate>  12/25(金)  </pubDate>
+      <description><![CDATA[ date: 12/25(木) amount: -¥1,000 category: Category is_transfer: false ]]></description>
+    </item>
+  </channel>
+</rss>`
+          })
+        }
+      ];
+
+      const createMockFiles = (filesArray) => {
+        let index = 0;
+        return {
+          hasNext: vi.fn(() => index < filesArray.length),
+          next: vi.fn(() => filesArray[index++]),
+        };
+      };
+
+      global.DriveApp.getFolderById.mockReturnValueOnce({
+        getFiles: vi.fn(() => createMockFiles(mockXmlFiles))
+      });
+
+      const result = Code.getAllXmlDataEntries_();
+      expect(result[0].date).toBe('2025-12-25');
+    });
+
+
     it('should prioritize explicit YYYY/MM/DD even if filename has different year', () => {
       const mockXmlFiles = [
         {
@@ -307,6 +343,77 @@ describe('Code.js', () => {
       const result = Code.getAllXmlDataEntries_();
       expect(result[0].date).toBe('2024-12-31');
     });
+
+    it('should prioritize transaction MM/DD over RFC822 pubDate year using filename year', () => {
+      const mockXmlFiles = [
+        {
+          getName: () => 'mfcf.202512.xml',
+          getBlob: () => ({
+            getDataAsString: () => `
+<rss version="2.0"> 
+  <channel>
+    <item>
+      <title>12/25(木) -¥1,000 TEST</title>
+      <pubDate>Thu, 25 Dec 2026 00:00:00 +0000</pubDate>
+      <description><![CDATA[ date: 12/25(木) amount: -¥1,000 category: Category is_transfer: false ]]></description>
+    </item>
+  </channel>
+</rss>`
+          })
+        }
+      ];
+
+      const createMockFiles = (filesArray) => {
+        let index = 0;
+        return {
+          hasNext: vi.fn(() => index < filesArray.length),
+          next: vi.fn(() => filesArray[index++]),
+        };
+      };
+
+      global.DriveApp.getFolderById.mockReturnValueOnce({
+        getFiles: vi.fn(() => createMockFiles(mockXmlFiles))
+      });
+
+      const result = Code.getAllXmlDataEntries_();
+      expect(result[0].date).toBe('2025-12-25');
+    });
+
+    it('should fallback to RFC822 pubDate when transaction date is missing', () => {
+      const mockXmlFiles = [
+        {
+          getName: () => 'mfcf.202601.xml',
+          getBlob: () => ({
+            getDataAsString: () => `
+<rss version="2.0"> 
+  <channel>
+    <item>
+      <title>NO_DATE -¥1,000 TEST</title>
+      <pubDate>Thu, 25 Dec 2025 00:00:00 +0000</pubDate>
+      <description><![CDATA[ amount: -¥1,000 category: Category is_transfer: false ]]></description>
+    </item>
+  </channel>
+</rss>`
+          })
+        }
+      ];
+
+      const createMockFiles = (filesArray) => {
+        let index = 0;
+        return {
+          hasNext: vi.fn(() => index < filesArray.length),
+          next: vi.fn(() => filesArray[index++]),
+        };
+      };
+
+      global.DriveApp.getFolderById.mockReturnValueOnce({
+        getFiles: vi.fn(() => createMockFiles(mockXmlFiles))
+      });
+
+      const result = Code.getAllXmlDataEntries_();
+      expect(result[0].date).toBe('2025-12-25');
+    });
+
 
     it('should handle invalid XML gracefully', () => {
       const mockXmlFiles = [
