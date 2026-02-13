@@ -30,14 +30,42 @@ paths:
               schema:
                 oneOf:
                   - type: object
+                    properties:
+                      mfcf:
+                        type: array
+                        items:
+                          $ref: '#/components/schemas/MfcfEntry'
                     additionalProperties:
                       type: array
                       items:
                         type: object
                         additionalProperties: true
-                    description: All CSV contents keyed by filename.
+                    description: All CSV contents keyed by filename and XML data under mfcf.
                   - type: object
                     properties:
                       status:
                         type: boolean
                     description: Status (when other parameters are provided).
+components:
+  schemas:
+    MfcfEntry:
+      type: object
+      properties:
+        date:
+          type: string
+          description: Transaction date in YYYY-MM-DD format.
+        amount:
+          type: integer
+          description: Transaction amount.
+        currency:
+          type: string
+          description: Currency code (e.g., JPY).
+        name:
+          type: string
+          description: Transaction name.
+        category:
+          type: string
+          description: Transaction category.
+        is_transfer:
+          type: boolean
+          description: Whether the transaction is a transfer.
