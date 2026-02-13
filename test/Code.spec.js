@@ -70,6 +70,51 @@ describe('Code.js', () => {
       }),
     };
 
+    // Mock XmlService
+    global.XmlService = {
+      parse: vi.fn((xml) => {
+        // Very simple mock for the RSS structure
+        const items = [];
+        if (xml.includes('<item>')) {
+          const itemMatches = xml.match(/<item>[\s\S]*?<\/item>/g) || [];
+          itemMatches.forEach(itemXml => {
+            const title = itemXml.match(/<title>(.*?)<\/title>/)?.[1] || '';
+            const pubDate = itemXml.match(/<pubDate>(.*?)<\/pubDate>/)?.[1] || '';
+            const description = itemXml.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/)?.[1] || '';
+            items.push({
+              getChildText: (name) => {
+                if (name === 'title') return title;
+                if (name === 'pubDate') return pubDate;
+                if (name === 'description') return description;
+                return '';
+              }
+            });
+          });
+        }
+
+        return {
+          getRootElement: () => ({
+            getChild: (name) => {
+              if (name === 'channel') {
+                return {
+                  getChildren: (childName) => {
+                    if (childName === 'item') return items;
+                    return [];
+                  }
+                };
+              }
+              return null;
+            }
+          })
+        };
+      })
+    };
+
+    // Mock Logger
+    global.Logger = {
+      log: vi.fn(),
+    };
+
     // Mock DriveApp
     const mockFiles = [
       {
@@ -108,9 +153,121 @@ describe('Code.js', () => {
 
     global.DriveApp = {
       getFolderById: vi.fn(() => ({
-        getFilesByType: vi.fn(() => createMockFiles(mockFiles))
+        getFilesByType: vi.fn(() => createMockFiles(mockFiles)),
+        getFiles: vi.fn(() => createMockFiles(mockFiles)),
       })),
     };
+  });
+
+  describe('getAllXmlDataEntries_', () => {
+    it('should retrieve and parse mfcf.YYYYMM.xml files in descending order', () => {
+      const mockXmlFiles = [
+        {
+          getName: () => 'mfcf.202601.xml',
+          getBlob: () => ({
+            getDataAsString: () => `
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>01/01(木) -¥1,000 TEST1</title>
+      <pubDate>Thu, 01 Jan 2026 00:00:00 +0000</pubDate>
+      <description><![CDATA[ date: 01/01(木) amount: -¥1,000 category: Category1 is_transfer: false ]]></description>
+    </item>
+  </channel>
+</rss>`
+          })
+        },
+        {
+          getName: () => 'mfcf.202602.xml',
+          getBlob: () => ({
+            getDataAsString: () => `
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>02/12(木) -¥3,000 DF.トウキユウカ-ド</title>
+      <pubDate>Thu, 12 Feb 2026 00:00:00 +0000</pubDate>
+      <description><![CDATA[ date: 02/12(木) amount: -¥3,000 category: 現金・カード/カード引き落とし is_transfer: false ]]></description>
+    </item>
+    <item>
+      <title>02/11(水) +¥5,000 Transfer</title>
+      <pubDate>Wed, 11 Feb 2026 00:00:00 +0000</pubDate>
+      <description><![CDATA[ date: 02/11(水) amount: +¥5,000 category: 振替 is_transfer: true ]]></description>
+    </item>
+  </channel>
+</rss>`
+          })
+        },
+        {
+          getName: () => 'ignore.me.xml',
+          getBlob: () => ({ getDataAsString: () => '' })
+        }
+      ];
+
+      const createMockFiles = (filesArray) => {
+        let index = 0;
+        return {
+          hasNext: vi.fn(() => index < filesArray.length),
+          next: vi.fn(() => filesArray[index++]),
+        };
+      };
+
+      global.DriveApp.getFolderById.mockReturnValueOnce({
+        getFiles: vi.fn(() => createMockFiles(mockXmlFiles))
+      });
+
+      const result = Code.getAllXmlDataEntries_();
+
+      // Should be 202602 items first, then 202601 items
+      expect(result.length).toBe(3);
+
+      // 202602 items
+      expect(result[0].date).toBe('2026-02-12');
+      expect(result[0].amount).toBe(-3000);
+      expect(result[0].name).toBe('DF.トウキユウカ-ド');
+      expect(result[0].category).toBe('現金・カード/カード引き落とし');
+      expect(result[0].is_transfer).toBe(false);
+
+      expect(result[1].date).toBe('2026-02-11');
+      expect(result[1].amount).toBe(5000);
+      expect(result[1].name).toBe('Transfer');
+      expect(result[1].category).toBe('振替');
+      expect(result[1].is_transfer).toBe(true);
+
+      // 202601 item
+      expect(result[2].date).toBe('2026-01-01');
+      expect(result[2].amount).toBe(-1000);
+    });
+
+    it('should handle invalid XML gracefully', () => {
+      const mockXmlFiles = [
+        {
+          getName: () => 'mfcf.202601.xml',
+          getBlob: () => ({
+            getDataAsString: () => 'invalid xml'
+          })
+        }
+      ];
+
+      const createMockFiles = (filesArray) => {
+        let index = 0;
+        return {
+          hasNext: vi.fn(() => index < filesArray.length),
+          next: vi.fn(() => filesArray[index++]),
+        };
+      };
+
+      global.XmlService.parse.mockImplementationOnce(() => {
+        throw new Error('Parse error');
+      });
+
+      global.DriveApp.getFolderById.mockReturnValueOnce({
+        getFiles: vi.fn(() => createMockFiles(mockXmlFiles))
+      });
+
+      const result = Code.getAllXmlDataEntries_();
+      expect(result).toEqual([]);
+      expect(global.Logger.log).toHaveBeenCalledWith(expect.stringContaining('Failed to process file mfcf.202601.xml: Parse error'));
+    });
   });
 
   describe('doGet', () => {
