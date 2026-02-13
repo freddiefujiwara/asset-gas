@@ -283,6 +283,7 @@ describe('Code.js', () => {
         details__liability_123: [{ other: 'val' }],
         'total-liability': [{ other: 'val' }],
         details__portfolio_456: [{ other: 'val' }],
+        mfcf: [],
       }));
     });
 
@@ -326,6 +327,7 @@ describe('Code.js', () => {
         details__liability_123: [{ other: 'val' }],
         'total-liability': [{ other: 'val' }],
         details__portfolio_456: [{ other: 'val' }],
+        mfcf: [],
       }));
     });
 
@@ -394,6 +396,7 @@ describe('Code.js', () => {
         details__liability_123: [{ other: 'val' }],
         'total-liability': [{ other: 'val' }],
         details__portfolio_456: [{ other: 'val' }],
+        mfcf: [],
       }));
     });
 
@@ -641,6 +644,7 @@ describe('Code.js', () => {
         details__liability_123: [{ other: 'val' }],
         'total-liability': [{ other: 'val' }],
         details__portfolio_456: [{ other: 'val' }],
+        mfcf: [],
       }), 21600);
 
       expect(cache.put).toHaveBeenCalledTimes(1);

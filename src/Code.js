@@ -35,6 +35,7 @@ export function preCacheAll() {
   const cache = CacheService.getScriptCache();
   const allEntries = getAllCsvDataEntries_();
   const allData = entriesToObject_(allEntries);
+  allData['mfcf'] = getAllXmlDataEntries_();
   const cacheKeys = ['0'];
 
   cache.removeAll(cacheKeys);
@@ -66,6 +67,7 @@ export function doGet(e) {
       }
 
       const allData = getAllCsvDataInFolder_();
+      allData['mfcf'] = getAllXmlDataEntries_();
       return createJsonResponse_(JSON.stringify(allData));
     }
 
