@@ -283,6 +283,7 @@ describe('Code.js', () => {
         details__liability_123: [{ other: 'val' }],
         'total-liability': [{ other: 'val' }],
         details__portfolio_456: [{ other: 'val' }],
+        mfcf: [],
       }));
     });
 
@@ -298,14 +299,26 @@ describe('Code.js', () => {
 
 
     it('should return cached all data when no parameters are provided and cache exists', () => {
-      const cachePayload = JSON.stringify({ assetClassRatio: [{ cached: true }] });
+      const csvPayload = JSON.stringify({ assetClassRatio: [{ cached: true }] });
+      const mfcfKeys = JSON.stringify(['mfcf.202401']);
+      const xmlPayload = JSON.stringify([{ date: '2024-01-01', amount: 100 }]);
       const cache = global.CacheService.getScriptCache();
-      cache.get.mockImplementation((key) => (key === '0' ? cachePayload : null));
+      cache.get.mockImplementation((key) => {
+        if (key === '0') return csvPayload;
+        if (key === 'mfcf') return mfcfKeys;
+        if (key === 'mfcf.202401') return xmlPayload;
+        return null;
+      });
 
       Code.doGet({ parameter: {} });
 
       expect(cache.get).toHaveBeenCalledWith('0');
-      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(cachePayload);
+      expect(cache.get).toHaveBeenCalledWith('mfcf');
+      expect(cache.get).toHaveBeenCalledWith('mfcf.202401');
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
+        assetClassRatio: [{ cached: true }],
+        mfcf: [{ date: '2024-01-01', amount: 100 }],
+      }));
       expect(global.DriveApp.getFolderById).not.toHaveBeenCalled();
       expect(cache.put).not.toHaveBeenCalled();
     });
@@ -326,6 +339,7 @@ describe('Code.js', () => {
         details__liability_123: [{ other: 'val' }],
         'total-liability': [{ other: 'val' }],
         details__portfolio_456: [{ other: 'val' }],
+        mfcf: [],
       }));
     });
 
@@ -394,6 +408,7 @@ describe('Code.js', () => {
         details__liability_123: [{ other: 'val' }],
         'total-liability': [{ other: 'val' }],
         details__portfolio_456: [{ other: 'val' }],
+        mfcf: [],
       }));
     });
 
@@ -620,35 +635,65 @@ describe('Code.js', () => {
       expect(global.CacheService.getScriptCache).toHaveBeenCalled();
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
         status: true,
-        cachedKeys: ['0'],
+        cachedKeys: ['0', 'mfcf'],
       }));
     });
   });
 
 
   describe('preCacheAll', () => {
-    it('should clear and put all cache entries with 6 hour ttl', () => {
-      const result = Code.preCacheAll();
+    it('should clear old keys, put all partitions and master key list', () => {
+      const mockXmlFiles = [
+        {
+          getName: () => 'mfcf.202601.xml',
+          getBlob: () => ({
+            getDataAsString: () => `
+<rss version="2.0">
+  <channel>
+    <item>
+      <title>01/01(木) -¥1,000 TEST1</title>
+      <pubDate>Thu, 01 Jan 2026 00:00:00 +0000</pubDate>
+      <description><![CDATA[ date: 01/01(木) amount: -¥1,000 category: Category1 is_transfer: false ]]></description>
+    </item>
+  </channel>
+</rss>`
+          })
+        }
+      ];
+
+      const createMockFiles = (filesArray) => {
+        let index = 0;
+        return {
+          hasNext: vi.fn(() => index < filesArray.length),
+          next: vi.fn(() => filesArray[index++]),
+        };
+      };
+
+      const folderMock = {
+        getFilesByType: vi.fn(() => createMockFiles([])),
+        getFiles: vi.fn(() => createMockFiles(mockXmlFiles)),
+      };
+      global.DriveApp.getFolderById.mockReturnValue(folderMock);
+
       const cache = global.CacheService.getScriptCache();
-
-      expect(global.CacheService.getScriptCache).toHaveBeenCalled();
-      expect(cache.removeAll).toHaveBeenCalledWith(['0']);
-
-      expect(cache.put).toHaveBeenCalledWith('0', JSON.stringify({
-        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
-        other: [{ header1: 'val3', header2: 'val4' }],
-        'breakdown-liability': [{ other: 'val' }],
-        details__liability_123: [{ other: 'val' }],
-        'total-liability': [{ other: 'val' }],
-        details__portfolio_456: [{ other: 'val' }],
-      }), 21600);
-
-      expect(cache.put).toHaveBeenCalledTimes(1);
-
-      expect(result).toEqual({
-        status: true,
-        cachedKeys: ['0'],
+      cache.get.mockImplementation((key) => {
+        if (key === 'mfcf') return JSON.stringify(['mfcf.old']);
+        return null;
       });
+
+      const result = Code.preCacheAll();
+
+      expect(cache.removeAll).toHaveBeenCalledWith(['mfcf.old']);
+      expect(cache.removeAll).toHaveBeenCalledWith(['0', 'mfcf']);
+
+      expect(cache.put).toHaveBeenCalledWith('0', expect.any(String), 21600);
+      expect(cache.put).toHaveBeenCalledWith('mfcf', JSON.stringify(['mfcf.202601']), 21600);
+      expect(cache.put).toHaveBeenCalledWith('mfcf.202601', expect.stringContaining('TEST1'), 21600);
+
+      expect(result.status).toBe(true);
+      expect(result.cachedKeys).toContain('0');
+      expect(result.cachedKeys).toContain('mfcf');
+      expect(result.cachedKeys).toContain('mfcf.202601');
     });
   });
 

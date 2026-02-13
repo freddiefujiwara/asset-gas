@@ -33,16 +33,36 @@ const FORMAT_RULES = [
 
 export function preCacheAll() {
   const cache = CacheService.getScriptCache();
+
+  // 古い月ごとのキャッシュキーを削除
+  const oldMfcfKeysRaw = cache.get('mfcf');
+  if (oldMfcfKeysRaw) {
+    try {
+      const oldKeys = JSON.parse(oldMfcfKeysRaw);
+      if (Array.isArray(oldKeys)) {
+        cache.removeAll(oldKeys);
+      }
+    } catch (e) {
+      // パース失敗は無視
+    }
+  }
+
   const allEntries = getAllCsvDataEntries_();
   const allData = entriesToObject_(allEntries);
-  const cacheKeys = ['0'];
+  const xmlDataByMonth = getAllXmlDataEntriesByMonth_();
+  const mfcfKeys = xmlDataByMonth.map((item) => item.key);
 
-  cache.removeAll(cacheKeys);
+  cache.removeAll(['0', 'mfcf']);
   cache.put('0', JSON.stringify(allData), MAX_CACHE_DURATION_SECONDS);
+  cache.put('mfcf', JSON.stringify(mfcfKeys), MAX_CACHE_DURATION_SECONDS);
+
+  xmlDataByMonth.forEach((item) => {
+    cache.put(item.key, JSON.stringify(item.entries), MAX_CACHE_DURATION_SECONDS);
+  });
 
   return {
     status: true,
-    cachedKeys: cacheKeys,
+    cachedKeys: ['0', 'mfcf', ...mfcfKeys],
   };
 }
 
@@ -60,12 +80,36 @@ export function doGet(e) {
     }
 
     if (isEmptyParameters_(parameters)) {
-      const cachedAllData = getCacheValue_('0');
-      if (cachedAllData !== null) {
-        return createJsonResponse_(cachedAllData);
+      const cachedCsvData = getCacheValue_('0');
+      const cachedMfcfKeysRaw = getCacheValue_('mfcf');
+
+      if (cachedCsvData !== null && cachedMfcfKeysRaw !== null) {
+        try {
+          const allData = JSON.parse(cachedCsvData);
+          const mfcfKeys = JSON.parse(cachedMfcfKeysRaw);
+          let allXmlEntries = [];
+          let allKeysPresent = true;
+
+          for (const key of mfcfKeys) {
+            const monthDataRaw = getCacheValue_(key);
+            if (monthDataRaw === null) {
+              allKeysPresent = false;
+              break;
+            }
+            allXmlEntries = allXmlEntries.concat(JSON.parse(monthDataRaw));
+          }
+
+          if (allKeysPresent) {
+            allData['mfcf'] = allXmlEntries;
+            return createJsonResponse_(JSON.stringify(allData));
+          }
+        } catch (e) {
+          // パース失敗などは無視してライブデータ取得へ
+        }
       }
 
       const allData = getAllCsvDataInFolder_();
+      allData['mfcf'] = getAllXmlDataEntries_();
       return createJsonResponse_(JSON.stringify(allData));
     }
 
@@ -200,9 +244,9 @@ function removeCsvExtension_(fileName) {
 }
 
 /**
- * mfcf.YYYYMM.xmlファイルを読み込み、全データを結合して返す
+ * mfcf.YYYYMM.xmlファイルを読み込み、月ごとのキーとデータのリストを返す
  */
-export function getAllXmlDataEntries_() {
+function getAllXmlDataEntriesByMonth_() {
   const folder = DriveApp.getFolderById(FOLDER_ID);
   const files = folder.getFiles();
   const xmlFiles = [];
@@ -215,26 +259,38 @@ export function getAllXmlDataEntries_() {
     if (match) {
       xmlFiles.push({
         file: file,
-        yyyymm: parseInt(match[1], 10),
+        yyyymm: match[1],
       });
     }
   }
 
   // YYYYMMが大きい順（新しい順）にソート
-  xmlFiles.sort((a, b) => b.yyyymm - a.yyyymm);
+  xmlFiles.sort((a, b) => parseInt(b.yyyymm, 10) - parseInt(a.yyyymm, 10));
 
-  let allEntries = [];
-  xmlFiles.forEach((item) => {
+  return xmlFiles.map((item) => {
     try {
       const xmlContent = item.file.getBlob().getDataAsString('UTF-8');
       const entries = parseMfcfXml_(xmlContent);
-      allEntries = allEntries.concat(entries);
+      return {
+        key: `mfcf.${item.yyyymm}`,
+        entries,
+      };
     } catch (e) {
-      Logger.log(`Failed to process file ${item.file.getName()}: ${e.message}`);
+      Logger.log(`Failed to process file mfcf.${item.yyyymm}.xml: ${e.message}`);
+      return {
+        key: `mfcf.${item.yyyymm}`,
+        entries: [],
+      };
     }
   });
+}
 
-  return allEntries;
+/**
+ * mfcf.YYYYMM.xmlファイルを読み込み、全データを結合して返す
+ */
+export function getAllXmlDataEntries_() {
+  const dataByMonth = getAllXmlDataEntriesByMonth_();
+  return dataByMonth.reduce((acc, item) => acc.concat(item.entries), []);
 }
 
 /**
