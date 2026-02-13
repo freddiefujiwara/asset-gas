@@ -199,6 +199,107 @@ function removeCsvExtension_(fileName) {
   return fileName.replace(/\.csv$/i, '');
 }
 
+/**
+ * mfcf.YYYYMM.xmlファイルを読み込み、全データを結合して返す
+ */
+export function getAllXmlDataEntries_() {
+  const folder = DriveApp.getFolderById(FOLDER_ID);
+  const files = folder.getFiles();
+  const xmlFiles = [];
+  const regex = /^mfcf\.(\d{6})\.xml$/;
+
+  while (files.hasNext()) {
+    const file = files.next();
+    const fileName = file.getName();
+    const match = fileName.match(regex);
+    if (match) {
+      xmlFiles.push({
+        file: file,
+        yyyymm: parseInt(match[1], 10),
+      });
+    }
+  }
+
+  // YYYYMMが大きい順（新しい順）にソート
+  xmlFiles.sort((a, b) => b.yyyymm - a.yyyymm);
+
+  let allEntries = [];
+  xmlFiles.forEach((item) => {
+    try {
+      const xmlContent = item.file.getBlob().getDataAsString('UTF-8');
+      const entries = parseMfcfXml_(xmlContent);
+      allEntries = allEntries.concat(entries);
+    } catch (e) {
+      Logger.log(`Failed to process file ${item.file.getName()}: ${e.message}`);
+    }
+  });
+
+  return allEntries;
+}
+
+/**
+ * XML(RSS 2.0)をパースしてオブジェクトの配列に変換する
+ */
+function parseMfcfXml_(xmlContent) {
+  const document = XmlService.parse(xmlContent);
+  const root = document.getRootElement();
+  const channel = root.getChild('channel');
+  if (!channel) return [];
+
+  const items = channel.getChildren('item');
+
+  return items.map((item) => {
+    const title = item.getChildText('title') || '';
+    const pubDate = item.getChildText('pubDate') || '';
+    const description = item.getChildText('description') || '';
+
+    // titleから金額と名前を抽出
+    // 形式例: "02/12(木) -¥3,000 DF.トウキユウカ-ド"
+    const titleMatch = title.match(/^\d{2}\/\d{2}\(.+?\)\s+([+-]?¥[\d,]+)\s+(.+)$/);
+    let amountText = '0';
+    let name = title;
+    if (titleMatch) {
+      amountText = titleMatch[1];
+      name = titleMatch[2];
+    }
+
+    const amount = parseInt(amountText.replace(/[¥,]/g, ''), 10) || 0;
+
+    // descriptionからcategoryとis_transferを抽出
+    // 形式例: " date: 02/12(木) amount: -¥3,000 category: 食費/その他食費 is_transfer: false "
+    const categoryMatch = description.match(/category:\s*(.*?)\s+is_transfer:/);
+    const category = categoryMatch ? categoryMatch[1].trim() : '';
+
+    const isTransferMatch = description.match(/is_transfer:\s*(true|false)/);
+    const is_transfer = isTransferMatch ? isTransferMatch[1] === 'true' : false;
+
+    return {
+      date: formatDate_(pubDate),
+      amount,
+      currency: 'JPY',
+      name,
+      category,
+      is_transfer,
+    };
+  });
+}
+
+/**
+ * pubDateをYYYY-MM-DD形式に変換する
+ */
+function formatDate_(pubDate) {
+  try {
+    const d = new Date(pubDate);
+    if (isNaN(d.getTime())) return '';
+    const yyyy = d.getUTCFullYear();
+    const mm = String(d.getUTCMonth() + 1).padStart(2, '0');
+    const dd = String(d.getUTCDate()).padStart(2, '0');
+    return `${yyyy}-${mm}-${dd}`;
+  } catch (e) {
+    return '';
+  }
+}
+
 function mapRowToObject_(headers, row) {
   return headers.reduce((acc, header, index) => {
     acc[header] = row[index];
