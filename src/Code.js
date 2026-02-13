@@ -330,7 +330,7 @@ function parseMfcfXml_(xmlContent, defaultYear) {
     const is_transfer = isTransferMatch ? isTransferMatch[1] === 'true' : false;
 
     return {
-      date: formatDate_(pubDate, defaultYear),
+      date: formatDate_(pickDateText_(description, title, pubDate), defaultYear),
       amount,
       currency: 'JPY',
       name,
@@ -338,6 +338,31 @@ function parseMfcfXml_(xmlContent, defaultYear) {
       is_transfer,
     };
   });
+}
+
+
+function pickDateText_(description, title, pubDate) {
+  const normalizedPubDate = String(pubDate || '').trim();
+
+  // pubDate自体が YYYY/MM/DD or YYYY-MM-DD の場合はそれを優先する
+  if (/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})/.test(normalizedPubDate)) {
+    return normalizedPubDate;
+  }
+
+  // 明細の取引日(date:)を優先する
+  const descriptionDateMatch = String(description || '').match(/date:\s*((?:\d{4}[\/-])?\d{1,2}[\/-]\d{1,2}(?:[\/-]\d{1,2})?)/);
+  if (descriptionDateMatch) {
+    return descriptionDateMatch[1];
+  }
+
+  // title先頭の MM/DD などをフォールバックで使う
+  const titleDateMatch = String(title || '').match(/^(\d{1,4}[\/-]\d{1,2}(?:[\/-]\d{1,2})?)/);
+  if (titleDateMatch) {
+    return titleDateMatch[1];
+  }
+
+  // 最後の手段としてpubDateを使う
+  return normalizedPubDate;
 }
 
 /**
