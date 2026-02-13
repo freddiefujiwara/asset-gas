@@ -299,14 +299,23 @@ describe('Code.js', () => {
 
 
     it('should return cached all data when no parameters are provided and cache exists', () => {
-      const cachePayload = JSON.stringify({ assetClassRatio: [{ cached: true }] });
+      const csvPayload = JSON.stringify({ assetClassRatio: [{ cached: true }] });
+      const xmlPayload = JSON.stringify([{ date: '2024-01-01', amount: 100 }]);
       const cache = global.CacheService.getScriptCache();
-      cache.get.mockImplementation((key) => (key === '0' ? cachePayload : null));
+      cache.get.mockImplementation((key) => {
+        if (key === '0') return csvPayload;
+        if (key === 'mfcf') return xmlPayload;
+        return null;
+      });
 
       Code.doGet({ parameter: {} });
 
       expect(cache.get).toHaveBeenCalledWith('0');
-      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(cachePayload);
+      expect(cache.get).toHaveBeenCalledWith('mfcf');
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
+        assetClassRatio: [{ cached: true }],
+        mfcf: [{ date: '2024-01-01', amount: 100 }],
+      }));
       expect(global.DriveApp.getFolderById).not.toHaveBeenCalled();
       expect(cache.put).not.toHaveBeenCalled();
     });
@@ -623,7 +632,7 @@ describe('Code.js', () => {
       expect(global.CacheService.getScriptCache).toHaveBeenCalled();
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
         status: true,
-        cachedKeys: ['0'],
+        cachedKeys: ['0', 'mfcf'],
       }));
     });
   });
@@ -635,7 +644,7 @@ describe('Code.js', () => {
       const cache = global.CacheService.getScriptCache();
 
       expect(global.CacheService.getScriptCache).toHaveBeenCalled();
-      expect(cache.removeAll).toHaveBeenCalledWith(['0']);
+      expect(cache.removeAll).toHaveBeenCalledWith(['0', 'mfcf']);
 
       expect(cache.put).toHaveBeenCalledWith('0', JSON.stringify({
         assetClassRatio: [{ other: 'val', amount_yen: '20' }],
@@ -644,14 +653,15 @@ describe('Code.js', () => {
         details__liability_123: [{ other: 'val' }],
         'total-liability': [{ other: 'val' }],
         details__portfolio_456: [{ other: 'val' }],
-        mfcf: [],
       }), 21600);
 
-      expect(cache.put).toHaveBeenCalledTimes(1);
+      expect(cache.put).toHaveBeenCalledWith('mfcf', JSON.stringify([]), 21600);
+
+      expect(cache.put).toHaveBeenCalledTimes(2);
 
       expect(result).toEqual({
         status: true,
-        cachedKeys: ['0'],
+        cachedKeys: ['0', 'mfcf'],
       });
     });
   });

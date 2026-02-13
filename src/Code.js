@@ -35,11 +35,12 @@ export function preCacheAll() {
   const cache = CacheService.getScriptCache();
   const allEntries = getAllCsvDataEntries_();
   const allData = entriesToObject_(allEntries);
-  allData['mfcf'] = getAllXmlDataEntries_();
-  const cacheKeys = ['0'];
+  const xmlData = getAllXmlDataEntries_();
+  const cacheKeys = ['0', 'mfcf'];
 
   cache.removeAll(cacheKeys);
   cache.put('0', JSON.stringify(allData), MAX_CACHE_DURATION_SECONDS);
+  cache.put('mfcf', JSON.stringify(xmlData), MAX_CACHE_DURATION_SECONDS);
 
   return {
     status: true,
@@ -61,9 +62,13 @@ export function doGet(e) {
     }
 
     if (isEmptyParameters_(parameters)) {
-      const cachedAllData = getCacheValue_('0');
-      if (cachedAllData !== null) {
-        return createJsonResponse_(cachedAllData);
+      const cachedCsvData = getCacheValue_('0');
+      const cachedXmlData = getCacheValue_('mfcf');
+
+      if (cachedCsvData !== null && cachedXmlData !== null) {
+        const allData = JSON.parse(cachedCsvData);
+        allData['mfcf'] = JSON.parse(cachedXmlData);
+        return createJsonResponse_(JSON.stringify(allData));
       }
 
       const allData = getAllCsvDataInFolder_();
