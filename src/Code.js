@@ -264,6 +264,7 @@ function getAllXmlDataEntriesByMonth_() {
   const xmlFiles = [];
   const regex = /^mfcf\.(\d{6})\.xml$/;
   let scannedCount = 0;
+  let skippedCount = 0;
   logDebug_(`XML scan start. folderId=${FOLDER_ID}`);
 
   while (files.hasNext()) {
@@ -278,11 +279,11 @@ function getAllXmlDataEntriesByMonth_() {
         yyyymm: match[1],
       });
     } else {
-      logDebug_(`XML skipped (non-target). file=${fileName}`);
+      skippedCount += 1;
     }
   }
 
-  logDebug_(`XML scan done. scanned=${scannedCount} target=${xmlFiles.length}`);
+  logDebug_(`XML scan done. scanned=${scannedCount} target=${xmlFiles.length} skipped=${skippedCount}`);
 
   // YYYYMMが大きい順（新しい順）にソート
   xmlFiles.sort((a, b) => parseInt(b.yyyymm, 10) - parseInt(a.yyyymm, 10));
