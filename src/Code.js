@@ -212,6 +212,7 @@ function isEmptyParameters_(parameters) {
 
 function getCsvFilesIterator_() {
   const folder = DriveApp.getFolderById(FOLDER_ID);
+  logDebug_(`CSV scan start. folderId=${FOLDER_ID}`);
   return folder.getFilesByType(getMimeTypes_().csv);
 }
 
@@ -223,17 +224,22 @@ function getAllCsvDataInFolder_() {
 function getAllCsvDataEntries_() {
   const files = getCsvFilesIterator_();
   const entries = [];
+  let fileCount = 0;
 
   while (files.hasNext()) {
     const file = files.next();
+    fileCount += 1;
     const typeName = removeCsvExtension_(file.getName());
     const csvContent = file.getBlob().getDataAsString('UTF-8');
     const parsedRows = parseCsv_(csvContent);
+    logDebug_(`CSV read. file=${file.getName()} type=${typeName} bytes=${csvContent.length} rows=${parsedRows.length}`);
     entries.push({
       typeName,
       data: applyFormattingRules(parsedRows, typeName),
     });
   }
+
+  logDebug_(`CSV scan done. files=${fileCount} keys=${entries.length}`);
 
   return entries;
 }
@@ -257,18 +263,26 @@ function getAllXmlDataEntriesByMonth_() {
   const files = folder.getFiles();
   const xmlFiles = [];
   const regex = /^mfcf\.(\d{6})\.xml$/;
+  let scannedCount = 0;
+  logDebug_(`XML scan start. folderId=${FOLDER_ID}`);
 
   while (files.hasNext()) {
     const file = files.next();
+    scannedCount += 1;
     const fileName = file.getName();
     const match = fileName.match(regex);
     if (match) {
+      logDebug_(`XML target found. file=${fileName} yyyymm=${match[1]}`);
       xmlFiles.push({
         file: file,
         yyyymm: match[1],
       });
+    } else {
+      logDebug_(`XML skipped (non-target). file=${fileName}`);
     }
   }
+
+  logDebug_(`XML scan done. scanned=${scannedCount} target=${xmlFiles.length}`);
 
   // YYYYMMが大きい順（新しい順）にソート
   xmlFiles.sort((a, b) => parseInt(b.yyyymm, 10) - parseInt(a.yyyymm, 10));
@@ -277,6 +291,7 @@ function getAllXmlDataEntriesByMonth_() {
     try {
       const xmlContent = item.file.getBlob().getDataAsString('UTF-8');
       const entries = parseMfcfXml_(xmlContent, item.yyyymm);
+      logDebug_(`XML parsed. key=mfcf.${item.yyyymm} bytes=${xmlContent.length} entries=${entries.length}`);
       return {
         key: `mfcf.${item.yyyymm}`,
         entries,
@@ -296,21 +311,28 @@ function getAllXmlDataEntriesByMonth_() {
  */
 export function getAllXmlDataEntries_() {
   const dataByMonth = getAllXmlDataEntriesByMonth_();
-  return dataByMonth.reduce((acc, item) => acc.concat(item.entries), []);
+  const allEntries = dataByMonth.reduce((acc, item) => acc.concat(item.entries), []);
+  logDebug_(`XML merge done. monthKeys=${dataByMonth.length} totalEntries=${allEntries.length}`);
+  return allEntries;
 }
 
 /**
  * XML(RSS 2.0)をパースしてオブジェクトの配列に変換する
  */
 function parseMfcfXml_(xmlContent, defaultYear) {
+  logDebug_(`XML parse start. defaultYear=${defaultYear} bytes=${String(xmlContent || '').length}`);
   const document = XmlService.parse(xmlContent);
   const root = document.getRootElement();
   const channel = root.getChild('channel');
-  if (!channel) return [];
+  if (!channel) {
+    logDebug_('XML parse no channel. returning empty entries.');
+    return [];
+  }
 
   const items = channel.getChildren('item');
+  logDebug_(`XML parse item count=${items.length}`);
 
-  return items.map((item) => {
+  const parsed = items.map((item) => {
     const title = item.getChildText('title') || '';
     const pubDate = item.getChildText('pubDate') || '';
     const description = item.getChildText('description') || '';
@@ -344,6 +366,17 @@ function parseMfcfXml_(xmlContent, defaultYear) {
       is_transfer,
     };
   });
+
+  logDebug_(`XML parse done. parsedEntries=${parsed.length}`);
+  return parsed;
+}
+
+function logDebug_(message) {
+  if (typeof Logger === 'undefined' || !Logger.log) {
+    return;
+  }
+
+  Logger.log(`[DEBUG] ${message}`);
 }
 
 
