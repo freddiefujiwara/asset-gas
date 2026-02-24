@@ -81,9 +81,7 @@ export function doGet(e) {
 
     if (isEmptyParameters_(parameters)) {
       if (isNoCacheMode_()) {
-        const allData = getAllCsvDataInFolder_();
-        allData['mfcf'] = getAllXmlDataEntries_();
-        return createJsonResponse_(JSON.stringify(withNoCacheFlag_(allData, false)));
+        return createLiveDataResponse_();
       }
 
       const cachedCsvData = getCacheValue_('0');
@@ -107,16 +105,14 @@ export function doGet(e) {
 
           if (allKeysPresent) {
             allData['mfcf'] = allXmlEntries;
-            return createJsonResponse_(JSON.stringify(withNoCacheFlag_(allData, true)));
+            return createJsonResponse_(JSON.stringify(withNoCacheFlag_(allData, false)));
           }
         } catch (e) {
           // パース失敗などは無視してライブデータ取得へ
         }
       }
 
-      const allData = getAllCsvDataInFolder_();
-      allData['mfcf'] = getAllXmlDataEntries_();
-      return createJsonResponse_(JSON.stringify(withNoCacheFlag_(allData, false)));
+      return createLiveDataResponse_();
     }
 
     return createJsonResponse_(JSON.stringify({ status: true }));
@@ -125,6 +121,13 @@ export function doGet(e) {
     const status = message === 'forbidden email' ? 403 : 401;
     return createJsonResponse_(JSON.stringify({ status, error: message }));
   }
+}
+
+
+function createLiveDataResponse_() {
+  const allData = getAllCsvDataInFolder_();
+  allData['mfcf'] = getAllXmlDataEntries_();
+  return createJsonResponse_(JSON.stringify(withNoCacheFlag_(allData, true)));
 }
 
 /**
@@ -188,17 +191,10 @@ function getCacheValue_(key) {
   return value === null ? null : value;
 }
 
-function getMimeTypes_() {
-  return {
-    csv: MimeType.CSV,
-    json: ContentService.MimeType.JSON,
-  };
-}
-
 function createJsonResponse_(jsonString) {
   return ContentService
     .createTextOutput(jsonString)
-    .setMimeType(getMimeTypes_().json);
+    .setMimeType(ContentService.MimeType.JSON);
 }
 
 function isEmptyParameters_(parameters) {
@@ -224,16 +220,20 @@ function getAllCsvDataInFolder_() {
 function getAllCsvDataEntries_() {
   const files = getCsvFilesIterator_();
   const entries = [];
-  let fileCount = 0;
+  let scannedCount = 0;
+  let csvFileCount = 0;
+  let skippedNonCsvCount = 0;
 
   while (files.hasNext()) {
     const file = files.next();
+    scannedCount += 1;
     const fileName = file.getName();
     if (!/\.csv$/i.test(fileName)) {
+      skippedNonCsvCount += 1;
       continue;
     }
 
-    fileCount += 1;
+    csvFileCount += 1;
     const typeName = removeCsvExtension_(fileName);
     const csvContent = file.getBlob().getDataAsString('UTF-8');
     const parsedRows = parseCsv_(csvContent);
@@ -244,7 +244,7 @@ function getAllCsvDataEntries_() {
     });
   }
 
-  logDebug_(`CSV scan done. files=${fileCount} keys=${entries.length}`);
+  logDebug_(`CSV scan done. scanned=${scannedCount} csv=${csvFileCount} skipped_non_csv=${skippedNonCsvCount} keys=${entries.length}`);
 
   return entries;
 }
@@ -506,10 +506,10 @@ function isNoCacheMode_() {
   return getScriptProperty_('NO_CACHE') === 'true';
 }
 
-function withNoCacheFlag_(payload, usedCache) {
+function withNoCacheFlag_(payload, noCache) {
   return {
     ...payload,
-    no_cache: !usedCache,
+    no_cache: noCache,
   };
 }
 
