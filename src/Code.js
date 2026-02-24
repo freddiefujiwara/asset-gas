@@ -80,6 +80,12 @@ export function doGet(e) {
     }
 
     if (isEmptyParameters_(parameters)) {
+      if (isNoCacheMode_()) {
+        const allData = getAllCsvDataInFolder_();
+        allData['mfcf'] = getAllXmlDataEntries_();
+        return createJsonResponse_(JSON.stringify(allData));
+      }
+
       const cachedCsvData = getCacheValue_('0');
       const cachedMfcfKeysRaw = getCacheValue_('mfcf');
 
@@ -455,6 +461,10 @@ function getScriptProperty_(key) {
 
 function isDebugMode_() {
   return getScriptProperty_('DEBUG') === 'true';
+}
+
+function isNoCacheMode_() {
+  return getScriptProperty_('NO_CACHE') === 'true';
 }
 
 function extractIdToken_(event) {

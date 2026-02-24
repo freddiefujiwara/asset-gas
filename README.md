@@ -589,6 +589,9 @@ Optional properties:
 - `DEBUG`
   - `true` disables auth checks.
   - any other value keeps auth enabled.
+- `NO_CACHE`
+  - `true` bypasses cache reads in `doGet` and always loads from Drive.
+  - any other value keeps normal cache-read behavior.
 
 Hard-coded constants in code:
 
