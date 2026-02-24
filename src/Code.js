@@ -83,7 +83,7 @@ export function doGet(e) {
       if (isNoCacheMode_()) {
         const allData = getAllCsvDataInFolder_();
         allData['mfcf'] = getAllXmlDataEntries_();
-        return createJsonResponse_(JSON.stringify(allData));
+        return createJsonResponse_(JSON.stringify(withNoCacheFlag_(allData, false)));
       }
 
       const cachedCsvData = getCacheValue_('0');
@@ -107,7 +107,7 @@ export function doGet(e) {
 
           if (allKeysPresent) {
             allData['mfcf'] = allXmlEntries;
-            return createJsonResponse_(JSON.stringify(allData));
+            return createJsonResponse_(JSON.stringify(withNoCacheFlag_(allData, true)));
           }
         } catch (e) {
           // パース失敗などは無視してライブデータ取得へ
@@ -116,7 +116,7 @@ export function doGet(e) {
 
       const allData = getAllCsvDataInFolder_();
       allData['mfcf'] = getAllXmlDataEntries_();
-      return createJsonResponse_(JSON.stringify(allData));
+      return createJsonResponse_(JSON.stringify(withNoCacheFlag_(allData, false)));
     }
 
     return createJsonResponse_(JSON.stringify({ status: true }));
@@ -465,6 +465,13 @@ function isDebugMode_() {
 
 function isNoCacheMode_() {
   return getScriptProperty_('NO_CACHE') === 'true';
+}
+
+function withNoCacheFlag_(payload, usedCache) {
+  return {
+    ...payload,
+    no_cache: !usedCache,
+  };
 }
 
 function extractIdToken_(event) {

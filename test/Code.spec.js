@@ -462,6 +462,7 @@ describe('Code.js', () => {
         'total-liability': [{ other: 'val' }],
         details__portfolio_456: [{ other: 'val' }],
         mfcf: [],
+        no_cache: true,
       }));
     });
 
@@ -496,6 +497,7 @@ describe('Code.js', () => {
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
         assetClassRatio: [{ cached: true }],
         mfcf: [{ date: '2024-01-01', amount: 100 }],
+        no_cache: false,
       }));
       expect(global.DriveApp.getFolderById).not.toHaveBeenCalled();
       expect(cache.put).not.toHaveBeenCalled();
@@ -517,6 +519,7 @@ describe('Code.js', () => {
         'total-liability': [{ other: 'val' }],
         details__portfolio_456: [{ other: 'val' }],
         mfcf: [],
+        no_cache: true,
       }));
     });
 
@@ -537,6 +540,7 @@ describe('Code.js', () => {
         'total-liability': [{ other: 'val' }],
         details__portfolio_456: [{ other: 'val' }],
         mfcf: [],
+        no_cache: true,
       }));
     });
 
@@ -606,6 +610,7 @@ describe('Code.js', () => {
         'total-liability': [{ other: 'val' }],
         details__portfolio_456: [{ other: 'val' }],
         mfcf: [],
+        no_cache: true,
       }));
     });
 

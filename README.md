@@ -357,9 +357,10 @@ On default request:
 3. Iterate all month keys from `mfcf`, reading each month cache.
 4. If every month key exists and parses:
    - concatenate month arrays into one `mfcf` array
-   - return merged cached response.
+   - return merged cached response with `no_cache: false`.
 5. If any miss/parse error occurs:
-   - ignore cache and rebuild live from Drive.
+   - ignore cache and rebuild live from Drive with `no_cache: true`.
+6. If `NO_CACHE=true`, skip cache reads and always rebuild live with `no_cache: true`.
 
 ---
 
