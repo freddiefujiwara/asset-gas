@@ -9,6 +9,7 @@ describe('Code.js', () => {
 
     scriptProperties = {
       DEBUG: 'true',
+      NO_CACHE: 'false',
       AVAILABLE_GMAILS: 'allowed@example.com',
       GOOGLE_OAUTH_CLIENT_ID: 'client-id',
     };
@@ -461,6 +462,7 @@ describe('Code.js', () => {
         'total-liability': [{ other: 'val' }],
         details__portfolio_456: [{ other: 'val' }],
         mfcf: [],
+        no_cache: true,
       }));
     });
 
@@ -495,9 +497,30 @@ describe('Code.js', () => {
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
         assetClassRatio: [{ cached: true }],
         mfcf: [{ date: '2024-01-01', amount: 100 }],
+        no_cache: false,
       }));
       expect(global.DriveApp.getFolderById).not.toHaveBeenCalled();
       expect(cache.put).not.toHaveBeenCalled();
+    });
+
+    it('should bypass cache reads when NO_CACHE is true', () => {
+      scriptProperties.NO_CACHE = 'true';
+      const cache = global.CacheService.getScriptCache();
+
+      Code.doGet({ parameter: {} });
+
+      expect(cache.get).not.toHaveBeenCalled();
+      expect(global.DriveApp.getFolderById).toHaveBeenCalled();
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
+        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
+        other: [{ header1: 'val3', header2: 'val4' }],
+        'breakdown-liability': [{ other: 'val' }],
+        details__liability_123: [{ other: 'val' }],
+        'total-liability': [{ other: 'val' }],
+        details__portfolio_456: [{ other: 'val' }],
+        mfcf: [],
+        no_cache: true,
+      }));
     });
 
 
@@ -517,6 +540,7 @@ describe('Code.js', () => {
         'total-liability': [{ other: 'val' }],
         details__portfolio_456: [{ other: 'val' }],
         mfcf: [],
+        no_cache: true,
       }));
     });
 
@@ -586,6 +610,7 @@ describe('Code.js', () => {
         'total-liability': [{ other: 'val' }],
         details__portfolio_456: [{ other: 'val' }],
         mfcf: [],
+        no_cache: true,
       }));
     });
 

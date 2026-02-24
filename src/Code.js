@@ -80,6 +80,10 @@ export function doGet(e) {
     }
 
     if (isEmptyParameters_(parameters)) {
+      if (isNoCacheMode_()) {
+        return createLiveDataResponse_();
+      }
+
       const cachedCsvData = getCacheValue_('0');
       const cachedMfcfKeysRaw = getCacheValue_('mfcf');
 
@@ -101,16 +105,14 @@ export function doGet(e) {
 
           if (allKeysPresent) {
             allData['mfcf'] = allXmlEntries;
-            return createJsonResponse_(JSON.stringify(allData));
+            return createJsonResponse_(JSON.stringify(withNoCacheFlag_(allData, false)));
           }
         } catch (e) {
           // パース失敗などは無視してライブデータ取得へ
         }
       }
 
-      const allData = getAllCsvDataInFolder_();
-      allData['mfcf'] = getAllXmlDataEntries_();
-      return createJsonResponse_(JSON.stringify(allData));
+      return createLiveDataResponse_();
     }
 
     return createJsonResponse_(JSON.stringify({ status: true }));
@@ -119,6 +121,13 @@ export function doGet(e) {
     const status = message === 'forbidden email' ? 403 : 401;
     return createJsonResponse_(JSON.stringify({ status, error: message }));
   }
+}
+
+
+function createLiveDataResponse_() {
+  const allData = getAllCsvDataInFolder_();
+  allData['mfcf'] = getAllXmlDataEntries_();
+  return createJsonResponse_(JSON.stringify(withNoCacheFlag_(allData, true)));
 }
 
 /**
@@ -182,17 +191,10 @@ function getCacheValue_(key) {
   return value === null ? null : value;
 }
 
-function getMimeTypes_() {
-  return {
-    csv: MimeType.CSV,
-    json: ContentService.MimeType.JSON,
-  };
-}
-
 function createJsonResponse_(jsonString) {
   return ContentService
     .createTextOutput(jsonString)
-    .setMimeType(getMimeTypes_().json);
+    .setMimeType(ContentService.MimeType.JSON);
 }
 
 function isEmptyParameters_(parameters) {
@@ -206,7 +208,8 @@ function isEmptyParameters_(parameters) {
 
 function getCsvFilesIterator_() {
   const folder = DriveApp.getFolderById(FOLDER_ID);
-  return folder.getFilesByType(getMimeTypes_().csv);
+  logDebug_(`CSV scan start. folderId=${FOLDER_ID}`);
+  return folder.getFiles();
 }
 
 function getAllCsvDataInFolder_() {
@@ -217,17 +220,31 @@ function getAllCsvDataInFolder_() {
 function getAllCsvDataEntries_() {
   const files = getCsvFilesIterator_();
   const entries = [];
+  let scannedCount = 0;
+  let csvFileCount = 0;
+  let skippedNonCsvCount = 0;
 
   while (files.hasNext()) {
     const file = files.next();
-    const typeName = removeCsvExtension_(file.getName());
+    scannedCount += 1;
+    const fileName = file.getName();
+    if (!/\.csv$/i.test(fileName)) {
+      skippedNonCsvCount += 1;
+      continue;
+    }
+
+    csvFileCount += 1;
+    const typeName = removeCsvExtension_(fileName);
     const csvContent = file.getBlob().getDataAsString('UTF-8');
     const parsedRows = parseCsv_(csvContent);
+    logDebug_(`CSV read. file=${fileName} type=${typeName} bytes=${csvContent.length} rows=${parsedRows.length}`);
     entries.push({
       typeName,
       data: applyFormattingRules(parsedRows, typeName),
     });
   }
+
+  logDebug_(`CSV scan done. scanned=${scannedCount} csv=${csvFileCount} skipped_non_csv=${skippedNonCsvCount} keys=${entries.length}`);
 
   return entries;
 }
@@ -251,18 +268,27 @@ function getAllXmlDataEntriesByMonth_() {
   const files = folder.getFiles();
   const xmlFiles = [];
   const regex = /^mfcf\.(\d{6})\.xml$/;
+  let scannedCount = 0;
+  let skippedCount = 0;
+  logDebug_(`XML scan start. folderId=${FOLDER_ID}`);
 
   while (files.hasNext()) {
     const file = files.next();
+    scannedCount += 1;
     const fileName = file.getName();
     const match = fileName.match(regex);
     if (match) {
+      logDebug_(`XML target found. file=${fileName} yyyymm=${match[1]}`);
       xmlFiles.push({
         file: file,
         yyyymm: match[1],
       });
+    } else {
+      skippedCount += 1;
     }
   }
+
+  logDebug_(`XML scan done. scanned=${scannedCount} target=${xmlFiles.length} skipped=${skippedCount}`);
 
   // YYYYMMが大きい順（新しい順）にソート
   xmlFiles.sort((a, b) => parseInt(b.yyyymm, 10) - parseInt(a.yyyymm, 10));
@@ -271,6 +297,7 @@ function getAllXmlDataEntriesByMonth_() {
     try {
       const xmlContent = item.file.getBlob().getDataAsString('UTF-8');
       const entries = parseMfcfXml_(xmlContent, item.yyyymm);
+      logDebug_(`XML parsed. key=mfcf.${item.yyyymm} bytes=${xmlContent.length} entries=${entries.length}`);
       return {
         key: `mfcf.${item.yyyymm}`,
         entries,
@@ -290,21 +317,28 @@ function getAllXmlDataEntriesByMonth_() {
  */
 export function getAllXmlDataEntries_() {
   const dataByMonth = getAllXmlDataEntriesByMonth_();
-  return dataByMonth.reduce((acc, item) => acc.concat(item.entries), []);
+  const allEntries = dataByMonth.reduce((acc, item) => acc.concat(item.entries), []);
+  logDebug_(`XML merge done. monthKeys=${dataByMonth.length} totalEntries=${allEntries.length}`);
+  return allEntries;
 }
 
 /**
  * XML(RSS 2.0)をパースしてオブジェクトの配列に変換する
  */
 function parseMfcfXml_(xmlContent, defaultYear) {
+  logDebug_(`XML parse start. defaultYear=${defaultYear} bytes=${String(xmlContent || '').length}`);
   const document = XmlService.parse(xmlContent);
   const root = document.getRootElement();
   const channel = root.getChild('channel');
-  if (!channel) return [];
+  if (!channel) {
+    logDebug_('XML parse no channel. returning empty entries.');
+    return [];
+  }
 
   const items = channel.getChildren('item');
+  logDebug_(`XML parse item count=${items.length}`);
 
-  return items.map((item) => {
+  const parsed = items.map((item) => {
     const title = item.getChildText('title') || '';
     const pubDate = item.getChildText('pubDate') || '';
     const description = item.getChildText('description') || '';
@@ -338,6 +372,17 @@ function parseMfcfXml_(xmlContent, defaultYear) {
       is_transfer,
     };
   });
+
+  logDebug_(`XML parse done. parsedEntries=${parsed.length}`);
+  return parsed;
+}
+
+function logDebug_(message) {
+  if (typeof Logger === 'undefined' || !Logger.log) {
+    return;
+  }
+
+  Logger.log(`[DEBUG] ${message}`);
 }
 
 
@@ -455,6 +500,17 @@ function getScriptProperty_(key) {
 
 function isDebugMode_() {
   return getScriptProperty_('DEBUG') === 'true';
+}
+
+function isNoCacheMode_() {
+  return getScriptProperty_('NO_CACHE') === 'true';
+}
+
+function withNoCacheFlag_(payload, noCache) {
+  return {
+    ...payload,
+    no_cache: noCache,
+  };
 }
 
 function extractIdToken_(event) {
