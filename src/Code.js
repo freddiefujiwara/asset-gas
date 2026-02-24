@@ -213,7 +213,7 @@ function isEmptyParameters_(parameters) {
 function getCsvFilesIterator_() {
   const folder = DriveApp.getFolderById(FOLDER_ID);
   logDebug_(`CSV scan start. folderId=${FOLDER_ID}`);
-  return folder.getFilesByType(getMimeTypes_().csv);
+  return folder.getFiles();
 }
 
 function getAllCsvDataInFolder_() {
@@ -228,11 +228,16 @@ function getAllCsvDataEntries_() {
 
   while (files.hasNext()) {
     const file = files.next();
+    const fileName = file.getName();
+    if (!/\.csv$/i.test(fileName)) {
+      continue;
+    }
+
     fileCount += 1;
-    const typeName = removeCsvExtension_(file.getName());
+    const typeName = removeCsvExtension_(fileName);
     const csvContent = file.getBlob().getDataAsString('UTF-8');
     const parsedRows = parseCsv_(csvContent);
-    logDebug_(`CSV read. file=${file.getName()} type=${typeName} bytes=${csvContent.length} rows=${parsedRows.length}`);
+    logDebug_(`CSV read. file=${fileName} type=${typeName} bytes=${csvContent.length} rows=${parsedRows.length}`);
     entries.push({
       typeName,
       data: applyFormattingRules(parsedRows, typeName),
