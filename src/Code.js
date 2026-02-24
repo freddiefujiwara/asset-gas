@@ -32,66 +32,38 @@ const FORMAT_RULES = [
 
 
 export function preCacheAll() {
-  const lock = LockService.getScriptLock();
-  if (!lock.tryLock(60000)) {
-    return { status: false, error: 'could not acquire lock' };
-  }
+  const cache = CacheService.getScriptCache();
 
-  try {
-    const cache = CacheService.getScriptCache();
-
-    // 古いインデックスを読み込み
-    const oldMfcfKeysRaw = cache.get('mfcf');
-    const oldCsvKeysRaw = cache.get('csv');
-
-    // 直ちにインデックスを無効化することで、データ取得中に古いキャッシュが使われるのを防ぐ
-    // インデックスがない場合、doGetはDriveからのライブデータ取得にフォールバックする
-    cache.removeAll(['mfcf', 'csv', '0']);
-
-    // 新しいデータを取得
-    const allEntries = getAllCsvDataEntries_();
-    const xmlDataByMonth = getAllXmlDataEntriesByMonth_();
-
-    // 新しいキーのリストを作成
-    const mfcfKeys = xmlDataByMonth.map((item) => item.key);
-    const csvKeys = allEntries.map((entry) => `csv.${entry.typeName}`);
-
-    // 各データを個別にキャッシュ（100KB制限対策）
-    xmlDataByMonth.forEach((item) => {
-      cache.put(item.key, JSON.stringify(item.entries), MAX_CACHE_DURATION_SECONDS);
-    });
-    allEntries.forEach((entry) => {
-      cache.put(`csv.${entry.typeName}`, JSON.stringify(entry.data), MAX_CACHE_DURATION_SECONDS);
-    });
-
-    // 最後に新しいインデックスを書き込む
-    cache.put('mfcf', JSON.stringify(mfcfKeys), MAX_CACHE_DURATION_SECONDS);
-    cache.put('csv', JSON.stringify(csvKeys), MAX_CACHE_DURATION_SECONDS);
-
-    // 不要になった古いキャッシュキーを削除
-    const allOldKeys = [];
-    [oldMfcfKeysRaw, oldCsvKeysRaw].forEach((raw) => {
-      if (raw) {
-        try {
-          const keys = JSON.parse(raw);
-          if (Array.isArray(keys)) allOldKeys.push(...keys);
-        } catch (e) { /* ignore */ }
+  // 古い月ごとのキャッシュキーを削除
+  const oldMfcfKeysRaw = cache.get('mfcf');
+  if (oldMfcfKeysRaw) {
+    try {
+      const oldKeys = JSON.parse(oldMfcfKeysRaw);
+      if (Array.isArray(oldKeys)) {
+        cache.removeAll(oldKeys);
       }
-    });
-
-    const currentKeys = new Set([...mfcfKeys, ...csvKeys]);
-    const keysToRemove = allOldKeys.filter((k) => !currentKeys.has(k));
-    if (keysToRemove.length > 0) {
-      cache.removeAll(keysToRemove);
+    } catch (e) {
+      // パース失敗は無視
     }
-
-    return {
-      status: true,
-      cachedKeys: ['mfcf', 'csv', ...mfcfKeys, ...csvKeys],
-    };
-  } finally {
-    lock.releaseLock();
   }
+
+  const allEntries = getAllCsvDataEntries_();
+  const allData = entriesToObject_(allEntries);
+  const xmlDataByMonth = getAllXmlDataEntriesByMonth_();
+  const mfcfKeys = xmlDataByMonth.map((item) => item.key);
+
+  cache.removeAll(['0', 'mfcf']);
+  cache.put('0', JSON.stringify(allData), MAX_CACHE_DURATION_SECONDS);
+  cache.put('mfcf', JSON.stringify(mfcfKeys), MAX_CACHE_DURATION_SECONDS);
+
+  xmlDataByMonth.forEach((item) => {
+    cache.put(item.key, JSON.stringify(item.entries), MAX_CACHE_DURATION_SECONDS);
+  });
+
+  return {
+    status: true,
+    cachedKeys: ['0', 'mfcf', ...mfcfKeys],
+  };
 }
 
 export function doGet(e) {
@@ -108,43 +80,28 @@ export function doGet(e) {
     }
 
     if (isEmptyParameters_(parameters)) {
-      const cachedCsvKeysRaw = getCacheValue_('csv');
+      const cachedCsvData = getCacheValue_('0');
       const cachedMfcfKeysRaw = getCacheValue_('mfcf');
 
-      if (cachedCsvKeysRaw !== null && cachedMfcfKeysRaw !== null) {
+      if (cachedCsvData !== null && cachedMfcfKeysRaw !== null) {
         try {
-          const csvKeys = JSON.parse(cachedCsvKeysRaw);
+          const allData = JSON.parse(cachedCsvData);
           const mfcfKeys = JSON.parse(cachedMfcfKeysRaw);
-          const allData = {};
+          let allXmlEntries = [];
           let allKeysPresent = true;
 
-          // CSVデータの復元
-          for (const key of csvKeys) {
-            const dataRaw = getCacheValue_(key);
-            if (dataRaw === null) {
+          for (const key of mfcfKeys) {
+            const monthDataRaw = getCacheValue_(key);
+            if (monthDataRaw === null) {
               allKeysPresent = false;
               break;
             }
-            const typeName = key.replace(/^csv\./, '');
-            allData[typeName] = JSON.parse(dataRaw);
+            allXmlEntries = allXmlEntries.concat(JSON.parse(monthDataRaw));
           }
 
           if (allKeysPresent) {
-            // XMLデータの復元
-            let allXmlEntries = [];
-            for (const key of mfcfKeys) {
-              const monthDataRaw = getCacheValue_(key);
-              if (monthDataRaw === null) {
-                allKeysPresent = false;
-                break;
-              }
-              allXmlEntries = allXmlEntries.concat(JSON.parse(monthDataRaw));
-            }
-
-            if (allKeysPresent) {
-              allData['mfcf'] = allXmlEntries;
-              return createJsonResponse_(JSON.stringify(allData));
-            }
+            allData['mfcf'] = allXmlEntries;
+            return createJsonResponse_(JSON.stringify(allData));
           }
         } catch (e) {
           // パース失敗などは無視してライブデータ取得へ

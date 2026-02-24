@@ -60,15 +60,6 @@ describe('Code.js', () => {
       getScriptCache: vi.fn(() => mockCache),
     };
 
-    // Mock LockService
-    const mockLock = {
-      tryLock: vi.fn(() => true),
-      releaseLock: vi.fn(),
-    };
-    global.LockService = {
-      getScriptLock: vi.fn(() => mockLock),
-    };
-
     // Mock Utilities
     global.Utilities = {
       parseCsv: vi.fn((csv) => {
@@ -485,14 +476,12 @@ describe('Code.js', () => {
 
 
     it('should return cached all data when no parameters are provided and cache exists', () => {
-      const csvKeys = JSON.stringify(['csv.assetClassRatio']);
-      const csvData = JSON.stringify([{ cached: true }]);
+      const csvPayload = JSON.stringify({ assetClassRatio: [{ cached: true }] });
       const mfcfKeys = JSON.stringify(['mfcf.202401']);
       const xmlPayload = JSON.stringify([{ date: '2024-01-01', amount: 100 }]);
       const cache = global.CacheService.getScriptCache();
       cache.get.mockImplementation((key) => {
-        if (key === 'csv') return csvKeys;
-        if (key === 'csv.assetClassRatio') return csvData;
+        if (key === '0') return csvPayload;
         if (key === 'mfcf') return mfcfKeys;
         if (key === 'mfcf.202401') return xmlPayload;
         return null;
@@ -500,8 +489,7 @@ describe('Code.js', () => {
 
       Code.doGet({ parameter: {} });
 
-      expect(cache.get).toHaveBeenCalledWith('csv');
-      expect(cache.get).toHaveBeenCalledWith('csv.assetClassRatio');
+      expect(cache.get).toHaveBeenCalledWith('0');
       expect(cache.get).toHaveBeenCalledWith('mfcf');
       expect(cache.get).toHaveBeenCalledWith('mfcf.202401');
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
@@ -822,16 +810,10 @@ describe('Code.js', () => {
 
       expect(global.UrlFetchApp.fetch).not.toHaveBeenCalled();
       expect(global.CacheService.getScriptCache).toHaveBeenCalled();
-      const output = JSON.parse(global.ContentService.createTextOutput.mock.calls.find(call => {
-        try {
-          return JSON.parse(call[0]).status === true;
-        } catch (e) {
-          return false;
-        }
-      })[0]);
-      expect(output.status).toBe(true);
-      expect(output.cachedKeys).toContain('csv');
-      expect(output.cachedKeys).toContain('mfcf');
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
+        status: true,
+        cachedKeys: ['0', 'mfcf'],
+      }));
     });
   });
 
@@ -865,10 +847,7 @@ describe('Code.js', () => {
       };
 
       const folderMock = {
-        getFilesByType: vi.fn(() => createMockFiles([{
-          getName: () => 'test.csv',
-          getBlob: () => ({ getDataAsString: () => 'h1,h2\nv1,v2' })
-        }])),
+        getFilesByType: vi.fn(() => createMockFiles([])),
         getFiles: vi.fn(() => createMockFiles(mockXmlFiles)),
       };
       global.DriveApp.getFolderById.mockReturnValue(folderMock);
@@ -876,41 +855,22 @@ describe('Code.js', () => {
       const cache = global.CacheService.getScriptCache();
       cache.get.mockImplementation((key) => {
         if (key === 'mfcf') return JSON.stringify(['mfcf.old']);
-        if (key === 'csv') return JSON.stringify(['csv.old']);
         return null;
       });
 
       const result = Code.preCacheAll();
 
-      // Should remove index keys first
-      expect(cache.removeAll).toHaveBeenCalledWith(['mfcf', 'csv', '0']);
+      expect(cache.removeAll).toHaveBeenCalledWith(['mfcf.old']);
+      expect(cache.removeAll).toHaveBeenCalledWith(['0', 'mfcf']);
 
-      // Should put partitioned data
-      expect(cache.put).toHaveBeenCalledWith('csv.test', JSON.stringify([{ h1: 'v1', h2: 'v2' }]), 21600);
+      expect(cache.put).toHaveBeenCalledWith('0', expect.any(String), 21600);
+      expect(cache.put).toHaveBeenCalledWith('mfcf', JSON.stringify(['mfcf.202601']), 21600);
       expect(cache.put).toHaveBeenCalledWith('mfcf.202601', expect.stringContaining('TEST1'), 21600);
 
-      // Should put index keys last
-      expect(cache.put).toHaveBeenCalledWith('mfcf', JSON.stringify(['mfcf.202601']), 21600);
-      expect(cache.put).toHaveBeenCalledWith('csv', JSON.stringify(['csv.test']), 21600);
-
-      // Should remove orphaned keys
-      expect(cache.removeAll).toHaveBeenCalledWith(['mfcf.old', 'csv.old']);
-
       expect(result.status).toBe(true);
-      expect(result.cachedKeys).toContain('csv.test');
-      expect(result.cachedKeys).toContain('mfcf.202601');
-      expect(result.cachedKeys).toContain('csv');
+      expect(result.cachedKeys).toContain('0');
       expect(result.cachedKeys).toContain('mfcf');
-    });
-
-    it('should return error if lock cannot be acquired', () => {
-      const mockLock = global.LockService.getScriptLock();
-      mockLock.tryLock.mockReturnValue(false);
-
-      const result = Code.preCacheAll();
-
-      expect(result.status).toBe(false);
-      expect(result.error).toBe('could not acquire lock');
+      expect(result.cachedKeys).toContain('mfcf.202601');
     });
   });
 
