@@ -449,21 +449,22 @@ describe('Code.js', () => {
   });
 
   describe('doGet', () => {
+    const EXPECTED_LIVE_DATA_RESPONSE = {
+      assetClassRatio: [{ other: 'val', amount_yen: '20' }],
+      other: [{ header1: 'val3', header2: 'val4' }],
+      'breakdown-liability': [{ other: 'val' }],
+      details__liability_123: [{ other: 'val' }],
+      'total-liability': [{ other: 'val' }],
+      details__portfolio_456: [{ other: 'val' }],
+      mfcf: [],
+      no_cache: true,
+    };
     it('should return all CSV data keyed by filename when no parameters are provided', () => {
       const e = { parameter: {} };
       Code.doGet(e);
 
       expect(global.DriveApp.getFolderById).toHaveBeenCalledWith('19PDxxar-38XMlBiYC02lDb1bJh3wJRkh');
-      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
-        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
-        other: [{ header1: 'val3', header2: 'val4' }],
-        'breakdown-liability': [{ other: 'val' }],
-        details__liability_123: [{ other: 'val' }],
-        'total-liability': [{ other: 'val' }],
-        details__portfolio_456: [{ other: 'val' }],
-        mfcf: [],
-        no_cache: true,
-      }));
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify(EXPECTED_LIVE_DATA_RESPONSE));
     });
 
     it('should return all CSV data when e is null', () => {
@@ -511,16 +512,7 @@ describe('Code.js', () => {
 
       expect(cache.get).not.toHaveBeenCalled();
       expect(global.DriveApp.getFolderById).toHaveBeenCalled();
-      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
-        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
-        other: [{ header1: 'val3', header2: 'val4' }],
-        'breakdown-liability': [{ other: 'val' }],
-        details__liability_123: [{ other: 'val' }],
-        'total-liability': [{ other: 'val' }],
-        details__portfolio_456: [{ other: 'val' }],
-        mfcf: [],
-        no_cache: true,
-      }));
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify(EXPECTED_LIVE_DATA_RESPONSE));
     });
 
     it('should fallback to folder data when cached mfcf key list is not an array', () => {
@@ -534,16 +526,7 @@ describe('Code.js', () => {
       Code.doGet({ parameter: {} });
 
       expect(global.DriveApp.getFolderById).toHaveBeenCalled();
-      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
-        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
-        other: [{ header1: 'val3', header2: 'val4' }],
-        'breakdown-liability': [{ other: 'val' }],
-        details__liability_123: [{ other: 'val' }],
-        'total-liability': [{ other: 'val' }],
-        details__portfolio_456: [{ other: 'val' }],
-        mfcf: [],
-        no_cache: true,
-      }));
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify(EXPECTED_LIVE_DATA_RESPONSE));
     });
 
 
@@ -556,32 +539,14 @@ describe('Code.js', () => {
       Code.doGet({ parameter: {} });
 
       expect(global.DriveApp.getFolderById).toHaveBeenCalled();
-      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
-        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
-        other: [{ header1: 'val3', header2: 'val4' }],
-        'breakdown-liability': [{ other: 'val' }],
-        details__liability_123: [{ other: 'val' }],
-        'total-liability': [{ other: 'val' }],
-        details__portfolio_456: [{ other: 'val' }],
-        mfcf: [],
-        no_cache: true,
-      }));
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify(EXPECTED_LIVE_DATA_RESPONSE));
     });
 
     it('should return all CSV data when other parameters are provided', () => {
       const e = { parameter: { unknown: 'value' } };
       Code.doGet(e);
 
-      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
-        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
-        other: [{ header1: 'val3', header2: 'val4' }],
-        'breakdown-liability': [{ other: 'val' }],
-        details__liability_123: [{ other: 'val' }],
-        'total-liability': [{ other: 'val' }],
-        details__portfolio_456: [{ other: 'val' }],
-        mfcf: [],
-        no_cache: true,
-      }));
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify(EXPECTED_LIVE_DATA_RESPONSE));
     });
 
     it('should skip auth when DEBUG is true', () => {
@@ -635,16 +600,7 @@ describe('Code.js', () => {
         headers: {},
       });
 
-      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
-        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
-        other: [{ header1: 'val3', header2: 'val4' }],
-        'breakdown-liability': [{ other: 'val' }],
-        details__liability_123: [{ other: 'val' }],
-        'total-liability': [{ other: 'val' }],
-        details__portfolio_456: [{ other: 'val' }],
-        mfcf: [],
-        no_cache: true,
-      }));
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify(EXPECTED_LIVE_DATA_RESPONSE));
     });
 
     it('should return 401 when event is undefined in non-debug mode', () => {

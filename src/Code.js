@@ -99,8 +99,9 @@ export function doGet(e) {
 
 function createLiveDataResponse_() {
   const allData = getAllCsvDataInFolder_();
-  allData['mfcf'] = getAllXmlDataEntries_();
-  return createJsonResponse_(JSON.stringify(withNoCacheFlag_(allData, true)));
+  return createJsonResponse_(
+    JSON.stringify(withNoCacheFlag_(attachMfcfEntries_(allData, getAllXmlDataEntries_()), true)),
+  );
 }
 
 function getAggregatedCachedData_() {
@@ -129,12 +130,18 @@ function getAggregatedCachedData_() {
       allXmlEntries = allXmlEntries.concat(JSON.parse(monthDataRaw));
     }
 
-    allData['mfcf'] = allXmlEntries;
-    return allData;
+    return attachMfcfEntries_(allData, allXmlEntries);
   } catch (e) {
     // パース失敗などは無視してライブデータ取得へ
     return null;
   }
+}
+
+function attachMfcfEntries_(allData, mfcfEntries) {
+  return {
+    ...allData,
+    mfcf: mfcfEntries,
+  };
 }
 
 /**
