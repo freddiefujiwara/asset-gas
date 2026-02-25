@@ -544,11 +544,20 @@ describe('Code.js', () => {
       }));
     });
 
-    it('should return status true when other parameters are provided', () => {
+    it('should return all CSV data when other parameters are provided', () => {
       const e = { parameter: { unknown: 'value' } };
       Code.doGet(e);
 
-      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({ status: true }));
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
+        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
+        other: [{ header1: 'val3', header2: 'val4' }],
+        'breakdown-liability': [{ other: 'val' }],
+        details__liability_123: [{ other: 'val' }],
+        'total-liability': [{ other: 'val' }],
+        details__portfolio_456: [{ other: 'val' }],
+        mfcf: [],
+        no_cache: true,
+      }));
     });
 
     it('should skip auth when DEBUG is true', () => {
