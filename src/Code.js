@@ -79,43 +79,16 @@ export function doGet(e) {
       verifyGoogleIdTokenOrThrow_(idToken);
     }
 
-    if (isEmptyParameters_(parameters)) {
-      if (isNoCacheMode_()) {
-        return createLiveDataResponse_();
-      }
-
-      const cachedCsvData = getCacheValue_('0');
-      const cachedMfcfKeysRaw = getCacheValue_('mfcf');
-
-      if (cachedCsvData !== null && cachedMfcfKeysRaw !== null) {
-        try {
-          const allData = JSON.parse(cachedCsvData);
-          const mfcfKeys = JSON.parse(cachedMfcfKeysRaw);
-          let allXmlEntries = [];
-          let allKeysPresent = true;
-
-          for (const key of mfcfKeys) {
-            const monthDataRaw = getCacheValue_(key);
-            if (monthDataRaw === null) {
-              allKeysPresent = false;
-              break;
-            }
-            allXmlEntries = allXmlEntries.concat(JSON.parse(monthDataRaw));
-          }
-
-          if (allKeysPresent) {
-            allData['mfcf'] = allXmlEntries;
-            return createJsonResponse_(JSON.stringify(withNoCacheFlag_(allData, false)));
-          }
-        } catch (e) {
-          // パース失敗などは無視してライブデータ取得へ
-        }
-      }
-
+    if (isNoCacheMode_()) {
       return createLiveDataResponse_();
     }
 
-    return createJsonResponse_(JSON.stringify({ status: true }));
+    const cachedData = getAggregatedCachedData_();
+    if (cachedData !== null) {
+      return createJsonResponse_(JSON.stringify(withNoCacheFlag_(cachedData, false)));
+    }
+
+    return createLiveDataResponse_();
   } catch (error) {
     const message = error?.message || 'unauthorized';
     const status = message === 'forbidden email' ? 403 : 401;
@@ -126,8 +99,49 @@ export function doGet(e) {
 
 function createLiveDataResponse_() {
   const allData = getAllCsvDataInFolder_();
-  allData['mfcf'] = getAllXmlDataEntries_();
-  return createJsonResponse_(JSON.stringify(withNoCacheFlag_(allData, true)));
+  return createJsonResponse_(
+    JSON.stringify(withNoCacheFlag_(attachMfcfEntries_(allData, getAllXmlDataEntries_()), true)),
+  );
+}
+
+function getAggregatedCachedData_() {
+  const cachedCsvData = getCacheValue_('0');
+  const cachedMfcfKeysRaw = getCacheValue_('mfcf');
+
+  if (cachedCsvData === null || cachedMfcfKeysRaw === null) {
+    return null;
+  }
+
+  try {
+    const allData = JSON.parse(cachedCsvData);
+    const mfcfKeys = JSON.parse(cachedMfcfKeysRaw);
+
+    if (!Array.isArray(mfcfKeys)) {
+      return null;
+    }
+
+    let allXmlEntries = [];
+
+    for (const key of mfcfKeys) {
+      const monthDataRaw = getCacheValue_(key);
+      if (monthDataRaw === null) {
+        return null;
+      }
+      allXmlEntries = allXmlEntries.concat(JSON.parse(monthDataRaw));
+    }
+
+    return attachMfcfEntries_(allData, allXmlEntries);
+  } catch (e) {
+    // パース失敗などは無視してライブデータ取得へ
+    return null;
+  }
+}
+
+function attachMfcfEntries_(allData, mfcfEntries) {
+  return {
+    ...allData,
+    mfcf: mfcfEntries,
+  };
 }
 
 /**
@@ -195,15 +209,6 @@ function createJsonResponse_(jsonString) {
   return ContentService
     .createTextOutput(jsonString)
     .setMimeType(ContentService.MimeType.JSON);
-}
-
-function isEmptyParameters_(parameters) {
-  if (!parameters) {
-    return true;
-  }
-
-  const keys = Object.keys(parameters).filter((key) => key !== 'id_token');
-  return keys.length === 0;
 }
 
 function getCsvFilesIterator_() {
