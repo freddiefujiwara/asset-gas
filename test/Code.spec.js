@@ -523,6 +523,30 @@ describe('Code.js', () => {
       }));
     });
 
+    it('should fallback to folder data when cached mfcf key list is not an array', () => {
+      const cache = global.CacheService.getScriptCache();
+      cache.get.mockImplementation((key) => {
+        if (key === '0') return JSON.stringify({ assetClassRatio: [{ cached: true }] });
+        if (key === 'mfcf') return JSON.stringify('mfcf.202401');
+        return null;
+      });
+
+      Code.doGet({ parameter: {} });
+
+      expect(global.DriveApp.getFolderById).toHaveBeenCalled();
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
+        assetClassRatio: [{ other: 'val', amount_yen: '20' }],
+        other: [{ header1: 'val3', header2: 'val4' }],
+        'breakdown-liability': [{ other: 'val' }],
+        details__liability_123: [{ other: 'val' }],
+        'total-liability': [{ other: 'val' }],
+        details__portfolio_456: [{ other: 'val' }],
+        mfcf: [],
+        no_cache: true,
+      }));
+    });
+
+
 
 
 

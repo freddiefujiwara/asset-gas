@@ -83,32 +83,9 @@ export function doGet(e) {
       return createLiveDataResponse_();
     }
 
-    const cachedCsvData = getCacheValue_('0');
-    const cachedMfcfKeysRaw = getCacheValue_('mfcf');
-
-    if (cachedCsvData !== null && cachedMfcfKeysRaw !== null) {
-      try {
-        const allData = JSON.parse(cachedCsvData);
-        const mfcfKeys = JSON.parse(cachedMfcfKeysRaw);
-        let allXmlEntries = [];
-        let allKeysPresent = true;
-
-        for (const key of mfcfKeys) {
-          const monthDataRaw = getCacheValue_(key);
-          if (monthDataRaw === null) {
-            allKeysPresent = false;
-            break;
-          }
-          allXmlEntries = allXmlEntries.concat(JSON.parse(monthDataRaw));
-        }
-
-        if (allKeysPresent) {
-          allData['mfcf'] = allXmlEntries;
-          return createJsonResponse_(JSON.stringify(withNoCacheFlag_(allData, false)));
-        }
-      } catch (e) {
-        // パース失敗などは無視してライブデータ取得へ
-      }
+    const cachedData = getAggregatedCachedData_();
+    if (cachedData !== null) {
+      return createJsonResponse_(JSON.stringify(withNoCacheFlag_(cachedData, false)));
     }
 
     return createLiveDataResponse_();
@@ -124,6 +101,40 @@ function createLiveDataResponse_() {
   const allData = getAllCsvDataInFolder_();
   allData['mfcf'] = getAllXmlDataEntries_();
   return createJsonResponse_(JSON.stringify(withNoCacheFlag_(allData, true)));
+}
+
+function getAggregatedCachedData_() {
+  const cachedCsvData = getCacheValue_('0');
+  const cachedMfcfKeysRaw = getCacheValue_('mfcf');
+
+  if (cachedCsvData === null || cachedMfcfKeysRaw === null) {
+    return null;
+  }
+
+  try {
+    const allData = JSON.parse(cachedCsvData);
+    const mfcfKeys = JSON.parse(cachedMfcfKeysRaw);
+
+    if (!Array.isArray(mfcfKeys)) {
+      return null;
+    }
+
+    let allXmlEntries = [];
+
+    for (const key of mfcfKeys) {
+      const monthDataRaw = getCacheValue_(key);
+      if (monthDataRaw === null) {
+        return null;
+      }
+      allXmlEntries = allXmlEntries.concat(JSON.parse(monthDataRaw));
+    }
+
+    allData['mfcf'] = allXmlEntries;
+    return allData;
+  } catch (e) {
+    // パース失敗などは無視してライブデータ取得へ
+    return null;
+  }
 }
 
 /**
