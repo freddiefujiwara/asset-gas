@@ -32,71 +32,43 @@ const FORMAT_RULES = [
 
 // --- Temporary share sessions (temporary access links) ---
 // A logged-in owner can issue a URL token that grants read-only access for
-// SHARE_TTL_SECONDS without a Google account. Sessions are stored in a
-// dedicated spreadsheet kept in the same Drive folder as the data files
+// SHARE_TTL_SECONDS without a Google account. Sessions are stored as JSON
+// records in a file kept in the same Drive folder as the data files
 // (token hashes only, never raw tokens), which doubles as an audit log.
-// The share spreadsheet is never exposed as data.
+// The share file is never exposed as data.
 
-const SHARE_SHEET_NAME = 'share_sessions';
-const SHARE_SPREADSHEET_NAME = 'asset-share-sessions';
-const SHARE_SPREADSHEET_ID_PROPERTY = 'SHARE_SPREADSHEET_ID';
+const SHARE_FILE_NAME = 'asset-share-sessions.json';
 // One month, so the owner can hand out a link well before it is needed.
 const SHARE_TTL_SECONDS = 30 * 24 * 60 * 60;
-const SHARE_HEADERS = [
-  'token_hash',
-  'issued_at',
-  'expires_at',
-  'revoked_at',
-  'access_count',
-  'last_accessed_at',
-];
 
-function setScriptProperty_(key, value) {
-  const properties = getScriptProperties_();
-  if (!properties || !properties.setProperty) {
+const findShareFile_ = () => {
+  const folder = DriveApp.getFolderById(FOLDER_ID);
+  const files = folder.getFilesByName(SHARE_FILE_NAME);
+  return files.hasNext() ? files.next() : null;
+};
+
+const readShareRecords_ = () => {
+  const file = findShareFile_();
+  if (!file) {
+    return [];
+  }
+  try {
+    const records = JSON.parse(file.getBlob().getDataAsString());
+    return Array.isArray(records) ? records : [];
+  } catch (e) {
+    // A corrupt share file is treated as having no sessions.
+    return [];
+  }
+};
+
+const writeShareRecords_ = records => {
+  const content = JSON.stringify(records);
+  const file = findShareFile_();
+  if (file) {
+    file.setContent(content);
     return;
   }
-  properties.setProperty(key, value);
-}
-
-function getShareSpreadsheet_() {
-  const storedId = getScriptProperty_(SHARE_SPREADSHEET_ID_PROPERTY);
-  if (storedId) {
-    try {
-      return SpreadsheetApp.openById(storedId);
-    } catch (e) {
-      // The stored spreadsheet is gone; fall through and find or create one.
-    }
-  }
-
-  const folder = DriveApp.getFolderById(FOLDER_ID);
-  const files = folder.getFilesByName(SHARE_SPREADSHEET_NAME);
-  while (files.hasNext()) {
-    const file = files.next();
-    if (file.getMimeType() === MimeType.GOOGLE_SHEETS) {
-      setScriptProperty_(SHARE_SPREADSHEET_ID_PROPERTY, file.getId());
-      return SpreadsheetApp.openById(file.getId());
-    }
-  }
-
-  const spreadsheet = SpreadsheetApp.create(SHARE_SPREADSHEET_NAME);
-  try {
-    DriveApp.getFileById(spreadsheet.getId()).moveTo(folder);
-  } catch (e) {
-    // Keep the new spreadsheet in the root folder if the move fails.
-  }
-  setScriptProperty_(SHARE_SPREADSHEET_ID_PROPERTY, spreadsheet.getId());
-  return spreadsheet;
-}
-
-const getShareSheet_ = () => {
-  const spreadsheet = getShareSpreadsheet_();
-  let sheet = spreadsheet.getSheetByName(SHARE_SHEET_NAME);
-  if (!sheet) {
-    sheet = spreadsheet.insertSheet(SHARE_SHEET_NAME);
-    sheet.appendRow(SHARE_HEADERS);
-  }
-  return sheet;
+  DriveApp.getFolderById(FOLDER_ID).createFile(SHARE_FILE_NAME, content, 'application/json');
 };
 
 const hashShareToken_ = token =>
@@ -105,32 +77,10 @@ const hashShareToken_ = token =>
     .map(byte => byte.toString(16).padStart(2, '0'))
     .join('');
 
-const readShareRows_ = () => {
-  const sheet = getShareSheet_();
-  const values = sheet.getDataRange().getValues();
-  return { sheet, values };
-};
-
-const shareCellIso_ = value => {
-  if (!value) {
-    return '';
-  }
-  if (value instanceof Date) {
-    return value.toISOString();
-  }
-  return String(value);
-};
-
-const revokeActiveShareSessions_ = nowIso => {
-  const { sheet, values } = readShareRows_();
-  values.forEach((row, index) => {
-    if (index === 0) {
-      return;
-    }
-    const revokedAt = shareCellIso_(row[3]);
-    const expiresAt = shareCellIso_(row[2]);
-    if (!revokedAt && expiresAt && expiresAt > nowIso) {
-      sheet.getRange(index + 1, 4).setValue(nowIso);
+const revokeActiveShareSessions_ = (records, nowIso) => {
+  records.forEach(record => {
+    if (!record.revoked_at && record.expires_at && record.expires_at > nowIso) {
+      record.revoked_at = nowIso;
     }
   });
 };
@@ -139,9 +89,18 @@ const issueShareSession_ = () => {
   const now = new Date();
   const nowIso = now.toISOString();
   const expiresIso = new Date(now.getTime() + SHARE_TTL_SECONDS * 1000).toISOString();
-  revokeActiveShareSessions_(nowIso);
+  const records = readShareRecords_();
+  revokeActiveShareSessions_(records, nowIso);
   const token = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
-  getShareSheet_().appendRow([hashShareToken_(token), nowIso, expiresIso, '', 0, '']);
+  records.push({
+    token_hash: hashShareToken_(token),
+    issued_at: nowIso,
+    expires_at: expiresIso,
+    revoked_at: '',
+    access_count: 0,
+    last_accessed_at: '',
+  });
+  writeShareRecords_(records);
   return {
     share_token: token,
     issued_at: nowIso,
@@ -151,7 +110,9 @@ const issueShareSession_ = () => {
 };
 
 const revokeShareSession_ = () => {
-  revokeActiveShareSessions_(new Date().toISOString());
+  const records = readShareRecords_();
+  revokeActiveShareSessions_(records, new Date().toISOString());
+  writeShareRecords_(records);
   return { revoked: true };
 };
 
@@ -160,23 +121,23 @@ const validateShareToken_ = token => {
     return null;
   }
   const hash = hashShareToken_(token);
-  const { sheet, values } = readShareRows_();
+  const records = readShareRecords_();
   const nowIso = new Date().toISOString();
-  for (let index = 1; index < values.length; index += 1) {
-    const row = values[index];
-    if (row[0] !== hash) {
+  for (let index = 0; index < records.length; index += 1) {
+    const record = records[index];
+    if (record.token_hash !== hash) {
       continue;
     }
-    if (shareCellIso_(row[3])) {
+    if (record.revoked_at) {
       return null;
     }
-    const expiresAt = shareCellIso_(row[2]);
-    if (!expiresAt || expiresAt <= nowIso) {
+    if (!record.expires_at || record.expires_at <= nowIso) {
       return null;
     }
-    sheet.getRange(index + 1, 5).setValue(Number(row[4] || 0) + 1);
-    sheet.getRange(index + 1, 6).setValue(nowIso);
-    return { expires_at: expiresAt };
+    record.access_count = Number(record.access_count || 0) + 1;
+    record.last_accessed_at = nowIso;
+    writeShareRecords_(records);
+    return { expires_at: record.expires_at };
   }
   return null;
 };
