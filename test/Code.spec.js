@@ -956,4 +956,251 @@ describe('Code.js', () => {
       expect(result[0]).toEqual({ other: 'v' });
     });
   });
+
+  describe('share sessions', () => {
+    const SHARE_HEADERS = [
+      'token_hash',
+      'issued_at',
+      'expires_at',
+      'revoked_at',
+      'access_count',
+      'last_accessed_at',
+    ];
+    let shareValues;
+    let shareSheetExists;
+    let mockShareSheet;
+    let mockShareSpreadsheet;
+    let uuidCounter = 0;
+
+    const shareHashOf = (token) =>
+      Array.from({ length: 32 }, (_, i) => token.charCodeAt(i % token.length) % 128)
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+
+    const lastJson = () => JSON.parse(global.ContentService.createTextOutput.mock.calls.at(-1)[0]);
+
+    const issueToken = () => {
+      Code.doGet({
+        parameter: { action: 'issue_share' },
+        headers: { Authorization: 'Bearer owner-token' },
+      });
+      return lastJson().share_token;
+    };
+
+    const createMockFiles = (filesArray) => {
+      let index = 0;
+      return {
+        hasNext: vi.fn(() => index < filesArray.length),
+        next: vi.fn(() => filesArray[index++]),
+      };
+    };
+
+    const folderWithShareFile = () => {
+      global.MimeType = {
+        CSV: 'text/csv',
+        GOOGLE_SHEETS: 'application/vnd.google-apps.spreadsheet',
+      };
+      const shareFile = {
+        getName: () => 'asset-share-sessions',
+        getMimeType: () => 'application/vnd.google-apps.spreadsheet',
+        getId: () => 'share-spreadsheet-id',
+      };
+      return {
+        getFiles: vi.fn(() => createMockFiles([])),
+        getFilesByName: vi.fn(() => createMockFiles([shareFile])),
+      };
+    };
+
+    beforeEach(() => {
+      scriptProperties.DEBUG = 'false';
+      scriptProperties.SHARE_SPREADSHEET_ID = 'share-spreadsheet-id';
+      uuidCounter = 0;
+      shareValues = [[...SHARE_HEADERS]];
+      shareSheetExists = true;
+
+      mockShareSheet = {
+        getDataRange: vi.fn(() => ({ getValues: vi.fn(() => shareValues) })),
+        appendRow: vi.fn((row) => { shareValues.push([...row]); }),
+        getRange: vi.fn((row, col) => ({
+          setValue: vi.fn((value) => { shareValues[row - 1][col - 1] = value; }),
+        })),
+      };
+      mockShareSpreadsheet = {
+        getId: vi.fn(() => 'share-spreadsheet-id'),
+        getSheetByName: vi.fn(() => (shareSheetExists ? mockShareSheet : null)),
+        insertSheet: vi.fn(() => { shareSheetExists = true; return mockShareSheet; }),
+      };
+      global.SpreadsheetApp = {
+        openById: vi.fn(() => mockShareSpreadsheet),
+        create: vi.fn(() => mockShareSpreadsheet),
+      };
+      global.Utilities = {
+        ...global.Utilities,
+        DigestAlgorithm: { SHA_256: 'SHA_256' },
+        computeDigest: vi.fn((algo, str) =>
+          Array.from({ length: 32 }, (_, i) => String(str).charCodeAt(i % String(str).length) % 128)),
+        getUuid: vi.fn(() => `00000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`),
+      };
+      global.PropertiesService = {
+        getScriptProperties: vi.fn(() => ({
+          getProperty: vi.fn((key) => scriptProperties[key] ?? ''),
+          setProperty: vi.fn((key, value) => { scriptProperties[key] = value; }),
+        })),
+      };
+    });
+
+    it('requires an ID token to issue a share session', () => {
+      Code.doGet({ parameter: { action: 'issue_share' }, headers: {} });
+      expect(lastJson()).toEqual({ status: 401, error: 'missing id token' });
+    });
+
+    it('issues a 30-day share session and stores only its hash', () => {
+      const before = Date.now();
+      const token = issueToken();
+      const result = lastJson();
+      expect(result.ttl_seconds).toBe(30 * 24 * 60 * 60);
+      expect(token).toMatch(/^[0-9a-f]{64}$/);
+      expect(Date.parse(result.expires_at) - before).toBeGreaterThan(29 * 24 * 60 * 60 * 1000);
+      expect(Date.parse(result.expires_at) - before).toBeLessThanOrEqual(30 * 24 * 60 * 60 * 1000 + 5000);
+      expect(shareValues).toHaveLength(2);
+      expect(shareValues[1][0]).toBe(shareHashOf(token));
+      expect(shareValues[1][0]).not.toBe(token);
+      expect(shareValues[1][4]).toBe(0);
+    });
+
+    it('creates the share sheet with headers when it does not exist yet', () => {
+      shareValues = [];
+      shareSheetExists = false;
+      issueToken();
+      expect(mockShareSpreadsheet.insertSheet).toHaveBeenCalledWith('share_sessions');
+      expect(shareValues[0]).toEqual(SHARE_HEADERS);
+      expect(shareValues).toHaveLength(2);
+    });
+
+    it('revokes the previous session when a new one is issued', () => {
+      const first = issueToken();
+      const second = issueToken();
+      expect(first).not.toBe(second);
+      expect(shareValues[1][3]).not.toBe('');
+      expect(shareValues[2][3]).toBe('');
+      Code.doGet({ parameter: { share_token: first } });
+      expect(lastJson()).toEqual({ status: 401, error: 'share session expired or invalid' });
+    });
+
+    it('serves data with a valid share token and counts the access', () => {
+      const token = issueToken();
+      Code.doGet({ parameter: { share_token: token } });
+      const data = lastJson();
+      expect(data.assetClassRatio).toEqual([{ other: 'val', amount_yen: '20' }]);
+      expect(data._share.expires_at).toBe(shareValues[1][2]);
+      expect(shareValues[1][4]).toBe(1);
+      expect(shareValues[1][5]).not.toBe('');
+    });
+
+    it('adds the share flag to cached data as well', () => {
+      const token = issueToken();
+      const cache = global.CacheService.getScriptCache();
+      cache.get.mockImplementation((key) => {
+        if (key === '0') return JSON.stringify({ assetClassRatio: [{ cached: true }] });
+        if (key === 'mfcf') return JSON.stringify([]);
+        return null;
+      });
+      Code.doGet({ parameter: { share_token: token } });
+      const data = lastJson();
+      expect(data.no_cache).toBe(false);
+      expect(data._share.expires_at).toBe(shareValues[1][2]);
+    });
+
+    it('rejects an expired share token', () => {
+      const token = 'expired-token';
+      shareValues.push([
+        shareHashOf(token),
+        new Date(Date.now() - 3600_000).toISOString(),
+        new Date(Date.now() - 1800_000).toISOString(),
+        '',
+        0,
+        '',
+      ]);
+      Code.doGet({ parameter: { share_token: token } });
+      expect(lastJson()).toEqual({ status: 401, error: 'share session expired or invalid' });
+    });
+
+    it('rejects a revoked share token', () => {
+      const token = 'revoked-token';
+      shareValues.push([
+        shareHashOf(token),
+        new Date().toISOString(),
+        new Date(Date.now() + 1800_000).toISOString(),
+        new Date().toISOString(),
+        0,
+        '',
+      ]);
+      Code.doGet({ parameter: { share_token: token } });
+      expect(lastJson()).toEqual({ status: 401, error: 'share session expired or invalid' });
+    });
+
+    it('rejects an unknown share token', () => {
+      Code.doGet({ parameter: { share_token: 'no-such-token' } });
+      expect(lastJson()).toEqual({ status: 401, error: 'share session expired or invalid' });
+    });
+
+    it('revokes the active session via the revoke action', () => {
+      const token = issueToken();
+      Code.doGet({
+        parameter: { action: 'revoke_share' },
+        headers: { Authorization: 'Bearer owner-token' },
+      });
+      expect(lastJson()).toEqual({ revoked: true });
+      Code.doGet({ parameter: { share_token: token } });
+      expect(lastJson()).toEqual({ status: 401, error: 'share session expired or invalid' });
+    });
+
+    it('finds the share spreadsheet in the data folder when no ID is stored', () => {
+      delete scriptProperties.SHARE_SPREADSHEET_ID;
+      global.DriveApp.getFolderById.mockReturnValue(folderWithShareFile());
+      issueToken();
+      expect(global.SpreadsheetApp.openById).toHaveBeenCalledWith('share-spreadsheet-id');
+      expect(scriptProperties.SHARE_SPREADSHEET_ID).toBe('share-spreadsheet-id');
+    });
+
+    it('falls back to the folder search when the stored spreadsheet is gone', () => {
+      global.SpreadsheetApp.openById.mockImplementationOnce(() => {
+        throw new Error('not found');
+      });
+      global.DriveApp.getFolderById.mockReturnValue(folderWithShareFile());
+      issueToken();
+      expect(global.SpreadsheetApp.openById).toHaveBeenCalledWith('share-spreadsheet-id');
+      expect(shareValues).toHaveLength(2);
+    });
+
+    it('creates the share spreadsheet in the data folder when none exists', () => {
+      delete scriptProperties.SHARE_SPREADSHEET_ID;
+      global.MimeType = {
+        CSV: 'text/csv',
+        GOOGLE_SHEETS: 'application/vnd.google-apps.spreadsheet',
+      };
+      global.DriveApp.getFolderById.mockReturnValue({
+        getFiles: vi.fn(() => createMockFiles([])),
+        getFilesByName: vi.fn(() => createMockFiles([])),
+      });
+      global.DriveApp.getFileById = vi.fn(() => ({ moveTo: vi.fn() }));
+      issueToken();
+      expect(global.SpreadsheetApp.create).toHaveBeenCalledWith('asset-share-sessions');
+      expect(global.DriveApp.getFileById).toHaveBeenCalledWith('share-spreadsheet-id');
+      expect(scriptProperties.SHARE_SPREADSHEET_ID).toBe('share-spreadsheet-id');
+    });
+
+    it('still issues when moving the new spreadsheet into the folder fails', () => {
+      delete scriptProperties.SHARE_SPREADSHEET_ID;
+      global.DriveApp.getFolderById.mockReturnValue({
+        getFiles: vi.fn(() => createMockFiles([])),
+        getFilesByName: vi.fn(() => createMockFiles([])),
+      });
+      global.DriveApp.getFileById = vi.fn(() => ({
+        moveTo: vi.fn(() => { throw new Error('cannot move'); }),
+      }));
+      const token = issueToken();
+      expect(token).toMatch(/^[0-9a-f]{64}$/);
+    });
+  });
 });

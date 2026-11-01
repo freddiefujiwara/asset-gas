@@ -30,6 +30,156 @@ const FORMAT_RULES = [
   },
 ];
 
+// --- Temporary share sessions (temporary access links) ---
+// A logged-in owner can issue a URL token that grants read-only access for
+// SHARE_TTL_SECONDS without a Google account. Sessions are stored in a
+// dedicated spreadsheet kept in the same Drive folder as the data files
+// (token hashes only, never raw tokens), which doubles as an audit log.
+// The share spreadsheet is never exposed as data.
+
+const SHARE_SHEET_NAME = 'share_sessions';
+const SHARE_SPREADSHEET_NAME = 'asset-share-sessions';
+const SHARE_SPREADSHEET_ID_PROPERTY = 'SHARE_SPREADSHEET_ID';
+// One month, so the owner can hand out a link well before it is needed.
+const SHARE_TTL_SECONDS = 30 * 24 * 60 * 60;
+const SHARE_HEADERS = [
+  'token_hash',
+  'issued_at',
+  'expires_at',
+  'revoked_at',
+  'access_count',
+  'last_accessed_at',
+];
+
+function setScriptProperty_(key, value) {
+  const properties = getScriptProperties_();
+  if (!properties || !properties.setProperty) {
+    return;
+  }
+  properties.setProperty(key, value);
+}
+
+function getShareSpreadsheet_() {
+  const storedId = getScriptProperty_(SHARE_SPREADSHEET_ID_PROPERTY);
+  if (storedId) {
+    try {
+      return SpreadsheetApp.openById(storedId);
+    } catch (e) {
+      // The stored spreadsheet is gone; fall through and find or create one.
+    }
+  }
+
+  const folder = DriveApp.getFolderById(FOLDER_ID);
+  const files = folder.getFilesByName(SHARE_SPREADSHEET_NAME);
+  while (files.hasNext()) {
+    const file = files.next();
+    if (file.getMimeType() === MimeType.GOOGLE_SHEETS) {
+      setScriptProperty_(SHARE_SPREADSHEET_ID_PROPERTY, file.getId());
+      return SpreadsheetApp.openById(file.getId());
+    }
+  }
+
+  const spreadsheet = SpreadsheetApp.create(SHARE_SPREADSHEET_NAME);
+  try {
+    DriveApp.getFileById(spreadsheet.getId()).moveTo(folder);
+  } catch (e) {
+    // Keep the new spreadsheet in the root folder if the move fails.
+  }
+  setScriptProperty_(SHARE_SPREADSHEET_ID_PROPERTY, spreadsheet.getId());
+  return spreadsheet;
+}
+
+const getShareSheet_ = () => {
+  const spreadsheet = getShareSpreadsheet_();
+  let sheet = spreadsheet.getSheetByName(SHARE_SHEET_NAME);
+  if (!sheet) {
+    sheet = spreadsheet.insertSheet(SHARE_SHEET_NAME);
+    sheet.appendRow(SHARE_HEADERS);
+  }
+  return sheet;
+};
+
+const hashShareToken_ = token =>
+  Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(token))
+    .map(byte => ((byte % 256) + 256) % 256)
+    .map(byte => byte.toString(16).padStart(2, '0'))
+    .join('');
+
+const readShareRows_ = () => {
+  const sheet = getShareSheet_();
+  const values = sheet.getDataRange().getValues();
+  return { sheet, values };
+};
+
+const shareCellIso_ = value => {
+  if (!value) {
+    return '';
+  }
+  if (value instanceof Date) {
+    return value.toISOString();
+  }
+  return String(value);
+};
+
+const revokeActiveShareSessions_ = nowIso => {
+  const { sheet, values } = readShareRows_();
+  values.forEach((row, index) => {
+    if (index === 0) {
+      return;
+    }
+    const revokedAt = shareCellIso_(row[3]);
+    const expiresAt = shareCellIso_(row[2]);
+    if (!revokedAt && expiresAt && expiresAt > nowIso) {
+      sheet.getRange(index + 1, 4).setValue(nowIso);
+    }
+  });
+};
+
+const issueShareSession_ = () => {
+  const now = new Date();
+  const nowIso = now.toISOString();
+  const expiresIso = new Date(now.getTime() + SHARE_TTL_SECONDS * 1000).toISOString();
+  revokeActiveShareSessions_(nowIso);
+  const token = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
+  getShareSheet_().appendRow([hashShareToken_(token), nowIso, expiresIso, '', 0, '']);
+  return {
+    share_token: token,
+    issued_at: nowIso,
+    expires_at: expiresIso,
+    ttl_seconds: SHARE_TTL_SECONDS,
+  };
+};
+
+const revokeShareSession_ = () => {
+  revokeActiveShareSessions_(new Date().toISOString());
+  return { revoked: true };
+};
+
+const validateShareToken_ = token => {
+  if (!token) {
+    return null;
+  }
+  const hash = hashShareToken_(token);
+  const { sheet, values } = readShareRows_();
+  const nowIso = new Date().toISOString();
+  for (let index = 1; index < values.length; index += 1) {
+    const row = values[index];
+    if (row[0] !== hash) {
+      continue;
+    }
+    if (shareCellIso_(row[3])) {
+      return null;
+    }
+    const expiresAt = shareCellIso_(row[2]);
+    if (!expiresAt || expiresAt <= nowIso) {
+      return null;
+    }
+    sheet.getRange(index + 1, 5).setValue(Number(row[4] || 0) + 1);
+    sheet.getRange(index + 1, 6).setValue(nowIso);
+    return { expires_at: expiresAt };
+  }
+  return null;
+};
 
 export function preCacheAll() {
   const cache = CacheService.getScriptCache();
@@ -74,21 +224,40 @@ export function doGet(e) {
       return createJsonResponse_(JSON.stringify(preCacheAll()));
     }
 
+    let shareSession = null;
+
     if (!isDebugMode_()) {
-      const idToken = extractIdToken_(e);
-      verifyGoogleIdTokenOrThrow_(idToken);
+      const action = parameters?.action;
+
+      if (action === 'issue_share' || action === 'revoke_share') {
+        verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
+        return createJsonResponse_(
+          JSON.stringify(action === 'issue_share' ? issueShareSession_() : revokeShareSession_()),
+        );
+      }
+
+      if (parameters?.share_token) {
+        shareSession = validateShareToken_(parameters.share_token);
+        if (!shareSession) {
+          throw new Error('share session expired or invalid');
+        }
+      } else {
+        verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
+      }
     }
 
     if (isNoCacheMode_()) {
-      return createLiveDataResponse_();
+      return createLiveDataResponse_(shareSession);
     }
 
     const cachedData = getAggregatedCachedData_();
     if (cachedData !== null) {
-      return createJsonResponse_(JSON.stringify(withNoCacheFlag_(cachedData, false)));
+      return createJsonResponse_(
+        JSON.stringify(withShareFlag_(withNoCacheFlag_(cachedData, false), shareSession)),
+      );
     }
 
-    return createLiveDataResponse_();
+    return createLiveDataResponse_(shareSession);
   } catch (error) {
     const message = error?.message || 'unauthorized';
     const status = message === 'forbidden email' ? 403 : 401;
@@ -97,10 +266,15 @@ export function doGet(e) {
 }
 
 
-function createLiveDataResponse_() {
+function createLiveDataResponse_(shareSession) {
   const allData = getAllCsvDataInFolder_();
   return createJsonResponse_(
-    JSON.stringify(withNoCacheFlag_(attachMfcfEntries_(allData, getAllXmlDataEntries_()), true)),
+    JSON.stringify(
+      withShareFlag_(
+        withNoCacheFlag_(attachMfcfEntries_(allData, getAllXmlDataEntries_()), true),
+        shareSession,
+      ),
+    ),
   );
 }
 
@@ -515,6 +689,17 @@ function withNoCacheFlag_(payload, noCache) {
   return {
     ...payload,
     no_cache: noCache,
+  };
+}
+
+function withShareFlag_(payload, shareSession) {
+  if (!shareSession) {
+    return payload;
+  }
+
+  return {
+    ...payload,
+    _share: { expires_at: shareSession.expires_at },
   };
 }
 
