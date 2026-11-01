@@ -958,18 +958,10 @@ describe('Code.js', () => {
   });
 
   describe('share sessions', () => {
-    const SHARE_HEADERS = [
-      'token_hash',
-      'issued_at',
-      'expires_at',
-      'revoked_at',
-      'access_count',
-      'last_accessed_at',
-    ];
-    let shareValues;
-    let shareSheetExists;
-    let mockShareSheet;
-    let mockShareSpreadsheet;
+    let shareFileContent;
+    let shareFileExists;
+    let mockShareFile;
+    let mockDataFolder;
     let uuidCounter = 0;
 
     const shareHashOf = (token) =>
@@ -995,45 +987,44 @@ describe('Code.js', () => {
       };
     };
 
-    const folderWithShareFile = () => {
-      global.MimeType = {
-        CSV: 'text/csv',
-        GOOGLE_SHEETS: 'application/vnd.google-apps.spreadsheet',
-      };
-      const shareFile = {
-        getName: () => 'asset-share-sessions',
-        getMimeType: () => 'application/vnd.google-apps.spreadsheet',
-        getId: () => 'share-spreadsheet-id',
-      };
-      return {
-        getFiles: vi.fn(() => createMockFiles([])),
-        getFilesByName: vi.fn(() => createMockFiles([shareFile])),
-      };
+    const shareRecords = () => JSON.parse(shareFileContent);
+
+    const seedShareFile = (records) => {
+      shareFileExists = true;
+      shareFileContent = JSON.stringify(records);
     };
 
     beforeEach(() => {
       scriptProperties.DEBUG = 'false';
-      scriptProperties.SHARE_SPREADSHEET_ID = 'share-spreadsheet-id';
       uuidCounter = 0;
-      shareValues = [[...SHARE_HEADERS]];
-      shareSheetExists = true;
+      shareFileContent = null;
+      shareFileExists = false;
 
-      mockShareSheet = {
-        getDataRange: vi.fn(() => ({ getValues: vi.fn(() => shareValues) })),
-        appendRow: vi.fn((row) => { shareValues.push([...row]); }),
-        getRange: vi.fn((row, col) => ({
-          setValue: vi.fn((value) => { shareValues[row - 1][col - 1] = value; }),
-        })),
+      mockShareFile = {
+        getName: vi.fn(() => 'asset-share-sessions.json'),
+        getMimeType: vi.fn(() => 'application/json'),
+        getBlob: vi.fn(() => ({ getDataAsString: vi.fn(() => shareFileContent) })),
+        setContent: vi.fn((content) => { shareFileContent = content; }),
       };
-      mockShareSpreadsheet = {
-        getId: vi.fn(() => 'share-spreadsheet-id'),
-        getSheetByName: vi.fn(() => (shareSheetExists ? mockShareSheet : null)),
-        insertSheet: vi.fn(() => { shareSheetExists = true; return mockShareSheet; }),
+
+      const csvFiles = [
+        {
+          getName: () => 'assetClassRatio.csv',
+          getBlob: () => ({ getDataAsString: () => 'timestamp,y,other\n2023-01-01,20,val' }),
+        },
+      ];
+      mockDataFolder = {
+        getFiles: vi.fn(() => createMockFiles([...csvFiles])),
+        getFilesByName: vi.fn((name) =>
+          createMockFiles(name === 'asset-share-sessions.json' && shareFileExists ? [mockShareFile] : [])),
+        createFile: vi.fn((name, content) => {
+          shareFileExists = true;
+          shareFileContent = content;
+          return mockShareFile;
+        }),
       };
-      global.SpreadsheetApp = {
-        openById: vi.fn(() => mockShareSpreadsheet),
-        create: vi.fn(() => mockShareSpreadsheet),
-      };
+      global.DriveApp.getFolderById.mockReturnValue(mockDataFolder);
+
       global.Utilities = {
         ...global.Utilities,
         DigestAlgorithm: { SHA_256: 'SHA_256' },
@@ -1041,16 +1032,15 @@ describe('Code.js', () => {
           Array.from({ length: 32 }, (_, i) => String(str).charCodeAt(i % String(str).length) % 128)),
         getUuid: vi.fn(() => `00000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`),
       };
-      global.PropertiesService = {
-        getScriptProperties: vi.fn(() => ({
-          getProperty: vi.fn((key) => scriptProperties[key] ?? ''),
-          setProperty: vi.fn((key, value) => { scriptProperties[key] = value; }),
-        })),
-      };
     });
 
     it('requires an ID token to issue a share session', () => {
       Code.doGet({ parameter: { action: 'issue_share' }, headers: {} });
+      expect(lastJson()).toEqual({ status: 401, error: 'missing id token' });
+    });
+
+    it('requires an ID token to revoke share sessions', () => {
+      Code.doGet({ parameter: { action: 'revoke_share' }, headers: {} });
       expect(lastJson()).toEqual({ status: 401, error: 'missing id token' });
     });
 
@@ -1062,27 +1052,50 @@ describe('Code.js', () => {
       expect(token).toMatch(/^[0-9a-f]{64}$/);
       expect(Date.parse(result.expires_at) - before).toBeGreaterThan(29 * 24 * 60 * 60 * 1000);
       expect(Date.parse(result.expires_at) - before).toBeLessThanOrEqual(30 * 24 * 60 * 60 * 1000 + 5000);
-      expect(shareValues).toHaveLength(2);
-      expect(shareValues[1][0]).toBe(shareHashOf(token));
-      expect(shareValues[1][0]).not.toBe(token);
-      expect(shareValues[1][4]).toBe(0);
+      const records = shareRecords();
+      expect(records).toHaveLength(1);
+      expect(records[0].token_hash).toBe(shareHashOf(token));
+      expect(records[0].token_hash).not.toBe(token);
+      expect(shareFileContent).not.toContain(token);
+      expect(records[0].access_count).toBe(0);
+      expect(records[0].revoked_at).toBe('');
     });
 
-    it('creates the share sheet with headers when it does not exist yet', () => {
-      shareValues = [];
-      shareSheetExists = false;
+    it('creates the share file in the data folder when it does not exist yet', () => {
       issueToken();
-      expect(mockShareSpreadsheet.insertSheet).toHaveBeenCalledWith('share_sessions');
-      expect(shareValues[0]).toEqual(SHARE_HEADERS);
-      expect(shareValues).toHaveLength(2);
+      expect(mockDataFolder.createFile).toHaveBeenCalledWith(
+        'asset-share-sessions.json',
+        expect.any(String),
+        'application/json',
+      );
+      expect(shareRecords()).toHaveLength(1);
+    });
+
+    it('reuses the existing share file instead of creating a new one', () => {
+      seedShareFile([]);
+      issueToken();
+      expect(mockDataFolder.createFile).not.toHaveBeenCalled();
+      expect(mockShareFile.setContent).toHaveBeenCalled();
+      expect(shareRecords()).toHaveLength(1);
+    });
+
+    it('treats a corrupt share file as having no sessions', () => {
+      shareFileExists = true;
+      shareFileContent = 'not json';
+      const token = issueToken();
+      expect(token).toMatch(/^[0-9a-f]{64}$/);
+      expect(shareRecords()).toHaveLength(1);
+      expect(shareRecords()[0].token_hash).toBe(shareHashOf(token));
     });
 
     it('revokes the previous session when a new one is issued', () => {
       const first = issueToken();
       const second = issueToken();
       expect(first).not.toBe(second);
-      expect(shareValues[1][3]).not.toBe('');
-      expect(shareValues[2][3]).toBe('');
+      const records = shareRecords();
+      expect(records).toHaveLength(2);
+      expect(records[0].revoked_at).not.toBe('');
+      expect(records[1].revoked_at).toBe('');
       Code.doGet({ parameter: { share_token: first } });
       expect(lastJson()).toEqual({ status: 401, error: 'share session expired or invalid' });
     });
@@ -1092,9 +1105,10 @@ describe('Code.js', () => {
       Code.doGet({ parameter: { share_token: token } });
       const data = lastJson();
       expect(data.assetClassRatio).toEqual([{ other: 'val', amount_yen: '20' }]);
-      expect(data._share.expires_at).toBe(shareValues[1][2]);
-      expect(shareValues[1][4]).toBe(1);
-      expect(shareValues[1][5]).not.toBe('');
+      const records = shareRecords();
+      expect(data._share.expires_at).toBe(records[0].expires_at);
+      expect(records[0].access_count).toBe(1);
+      expect(records[0].last_accessed_at).not.toBe('');
     });
 
     it('adds the share flag to cached data as well', () => {
@@ -1108,18 +1122,20 @@ describe('Code.js', () => {
       Code.doGet({ parameter: { share_token: token } });
       const data = lastJson();
       expect(data.no_cache).toBe(false);
-      expect(data._share.expires_at).toBe(shareValues[1][2]);
+      expect(data._share.expires_at).toBe(shareRecords()[0].expires_at);
     });
 
     it('rejects an expired share token', () => {
       const token = 'expired-token';
-      shareValues.push([
-        shareHashOf(token),
-        new Date(Date.now() - 3600_000).toISOString(),
-        new Date(Date.now() - 1800_000).toISOString(),
-        '',
-        0,
-        '',
+      seedShareFile([
+        {
+          token_hash: shareHashOf(token),
+          issued_at: new Date(Date.now() - 3600_000).toISOString(),
+          expires_at: new Date(Date.now() - 1800_000).toISOString(),
+          revoked_at: '',
+          access_count: 0,
+          last_accessed_at: '',
+        },
       ]);
       Code.doGet({ parameter: { share_token: token } });
       expect(lastJson()).toEqual({ status: 401, error: 'share session expired or invalid' });
@@ -1127,13 +1143,15 @@ describe('Code.js', () => {
 
     it('rejects a revoked share token', () => {
       const token = 'revoked-token';
-      shareValues.push([
-        shareHashOf(token),
-        new Date().toISOString(),
-        new Date(Date.now() + 1800_000).toISOString(),
-        new Date().toISOString(),
-        0,
-        '',
+      seedShareFile([
+        {
+          token_hash: shareHashOf(token),
+          issued_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 1800_000).toISOString(),
+          revoked_at: new Date().toISOString(),
+          access_count: 0,
+          last_accessed_at: '',
+        },
       ]);
       Code.doGet({ parameter: { share_token: token } });
       expect(lastJson()).toEqual({ status: 401, error: 'share session expired or invalid' });
@@ -1151,56 +1169,9 @@ describe('Code.js', () => {
         headers: { Authorization: 'Bearer owner-token' },
       });
       expect(lastJson()).toEqual({ revoked: true });
+      expect(shareRecords()[0].revoked_at).not.toBe('');
       Code.doGet({ parameter: { share_token: token } });
       expect(lastJson()).toEqual({ status: 401, error: 'share session expired or invalid' });
-    });
-
-    it('finds the share spreadsheet in the data folder when no ID is stored', () => {
-      delete scriptProperties.SHARE_SPREADSHEET_ID;
-      global.DriveApp.getFolderById.mockReturnValue(folderWithShareFile());
-      issueToken();
-      expect(global.SpreadsheetApp.openById).toHaveBeenCalledWith('share-spreadsheet-id');
-      expect(scriptProperties.SHARE_SPREADSHEET_ID).toBe('share-spreadsheet-id');
-    });
-
-    it('falls back to the folder search when the stored spreadsheet is gone', () => {
-      global.SpreadsheetApp.openById.mockImplementationOnce(() => {
-        throw new Error('not found');
-      });
-      global.DriveApp.getFolderById.mockReturnValue(folderWithShareFile());
-      issueToken();
-      expect(global.SpreadsheetApp.openById).toHaveBeenCalledWith('share-spreadsheet-id');
-      expect(shareValues).toHaveLength(2);
-    });
-
-    it('creates the share spreadsheet in the data folder when none exists', () => {
-      delete scriptProperties.SHARE_SPREADSHEET_ID;
-      global.MimeType = {
-        CSV: 'text/csv',
-        GOOGLE_SHEETS: 'application/vnd.google-apps.spreadsheet',
-      };
-      global.DriveApp.getFolderById.mockReturnValue({
-        getFiles: vi.fn(() => createMockFiles([])),
-        getFilesByName: vi.fn(() => createMockFiles([])),
-      });
-      global.DriveApp.getFileById = vi.fn(() => ({ moveTo: vi.fn() }));
-      issueToken();
-      expect(global.SpreadsheetApp.create).toHaveBeenCalledWith('asset-share-sessions');
-      expect(global.DriveApp.getFileById).toHaveBeenCalledWith('share-spreadsheet-id');
-      expect(scriptProperties.SHARE_SPREADSHEET_ID).toBe('share-spreadsheet-id');
-    });
-
-    it('still issues when moving the new spreadsheet into the folder fails', () => {
-      delete scriptProperties.SHARE_SPREADSHEET_ID;
-      global.DriveApp.getFolderById.mockReturnValue({
-        getFiles: vi.fn(() => createMockFiles([])),
-        getFilesByName: vi.fn(() => createMockFiles([])),
-      });
-      global.DriveApp.getFileById = vi.fn(() => ({
-        moveTo: vi.fn(() => { throw new Error('cannot move'); }),
-      }));
-      const token = issueToken();
-      expect(token).toMatch(/^[0-9a-f]{64}$/);
     });
   });
 });
