@@ -748,3 +748,16 @@ Goal of tests:
   - or query: `id_token=<id_token>`
 - Main output: merged CSV datasets + `mfcf` transactions
 
+
+## Staging environment
+
+A separate staging deployment of this script can be pointed at dummy
+data by setting script properties on the staging project:
+
+- `DATA_FOLDER_ID`: Drive folder holding the staging CSV/XML data files
+  and the staging share-session file. When unset, the built-in
+  production folder is used and behavior is identical to production.
+- `AVAILABLE_GMAILS` / `GOOGLE_OAUTH_CLIENT_ID`: same as production
+  (the owner's account and the shared OAuth client).
+
+The staging project has no triggers; it only serves requests.
