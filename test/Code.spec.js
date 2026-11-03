@@ -1174,4 +1174,19 @@ describe('Code.js', () => {
       expect(lastJson()).toEqual({ status: 401, error: 'share session expired or invalid' });
     });
   });
+
+  describe('data folder override (staging)', () => {
+    it('uses the production folder when DATA_FOLDER_ID is unset', () => {
+      Code.getAllXmlDataEntries_();
+      expect(global.DriveApp.getFolderById).toHaveBeenCalledWith(
+        '19PDxxar-38XMlBiYC02lDb1bJh3wJRkh'
+      );
+    });
+
+    it('uses DATA_FOLDER_ID when the script property is set', () => {
+      scriptProperties.DATA_FOLDER_ID = 'staging-folder-id';
+      Code.getAllXmlDataEntries_();
+      expect(global.DriveApp.getFolderById).toHaveBeenCalledWith('staging-folder-id');
+    });
+  });
 });

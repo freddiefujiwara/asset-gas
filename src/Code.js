@@ -1,4 +1,10 @@
 const FOLDER_ID = '19PDxxar-38XMlBiYC02lDb1bJh3wJRkh';
+
+// Environment separation (staging): when the DATA_FOLDER_ID script
+// property is set, all data and share-session files are read from that
+// folder instead of the production folder above. When the property is
+// unset, behavior is identical to production.
+const dataFolderId_ = () => getScriptProperty_('DATA_FOLDER_ID') || FOLDER_ID;
 const MAX_CACHE_DURATION_SECONDS = 21600;
 
 const FORMAT_RULES = [
@@ -42,7 +48,7 @@ const SHARE_FILE_NAME = 'asset-share-sessions.json';
 const SHARE_TTL_SECONDS = 30 * 24 * 60 * 60;
 
 const findShareFile_ = () => {
-  const folder = DriveApp.getFolderById(FOLDER_ID);
+  const folder = DriveApp.getFolderById(dataFolderId_());
   const files = folder.getFilesByName(SHARE_FILE_NAME);
   return files.hasNext() ? files.next() : null;
 };
@@ -68,7 +74,7 @@ const writeShareRecords_ = records => {
     file.setContent(content);
     return;
   }
-  DriveApp.getFolderById(FOLDER_ID).createFile(SHARE_FILE_NAME, content, 'application/json');
+  DriveApp.getFolderById(dataFolderId_()).createFile(SHARE_FILE_NAME, content, 'application/json');
 };
 
 const hashShareToken_ = token =>
@@ -347,8 +353,8 @@ function createJsonResponse_(jsonString) {
 }
 
 function getCsvFilesIterator_() {
-  const folder = DriveApp.getFolderById(FOLDER_ID);
-  logDebug_(`CSV scan start. folderId=${FOLDER_ID}`);
+  const folder = DriveApp.getFolderById(dataFolderId_());
+  logDebug_(`CSV scan start. folderId=${dataFolderId_()}`);
   return folder.getFiles();
 }
 
@@ -404,13 +410,13 @@ function removeCsvExtension_(fileName) {
  * mfcf.YYYYMM.xmlファイルを読み込み、月ごとのキーとデータのリストを返す
  */
 function getAllXmlDataEntriesByMonth_() {
-  const folder = DriveApp.getFolderById(FOLDER_ID);
+  const folder = DriveApp.getFolderById(dataFolderId_());
   const files = folder.getFiles();
   const xmlFiles = [];
   const regex = /^mfcf\.(\d{6})\.xml$/;
   let scannedCount = 0;
   let skippedCount = 0;
-  logDebug_(`XML scan start. folderId=${FOLDER_ID}`);
+  logDebug_(`XML scan start. folderId=${dataFolderId_()}`);
 
   while (files.hasNext()) {
     const file = files.next();
