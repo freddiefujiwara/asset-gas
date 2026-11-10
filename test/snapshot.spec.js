@@ -3,8 +3,8 @@ import * as Code from '../src/Code.js';
 
 const BREAKDOWN_CSV = [
   'category,amount_yen,percentage',
-  '現金・預金,1000,10',
-  '株式,2000,20',
+  '預金・現金,1000,10',
+  '株式(現物),2000,20',
   '投資信託,3000,30',
   '年金,4000,40',
   'ポイント,500,5',
@@ -189,8 +189,8 @@ describe('Monthly snapshots', () => {
       const row = Code.computeSnapshotRow_(
         {
           breakdown: [
-            { category: '現金・預金', amount_yen: '1000' },
-            { category: '株式', amount_yen: '2000' },
+            { category: '預金・現金', amount_yen: '1000' },
+            { category: '株式(現物)', amount_yen: '2000' },
             { category: '投資信託', amount_yen: '3000' },
             { category: '年金', amount_yen: '4000' },
             { category: 'ポイント', amount_yen: '500' },
@@ -211,6 +211,29 @@ describe('Monthly snapshots', () => {
         living_cost_12m_avg: 0,
         income_12m_avg: 0,
       });
+    });
+
+    it('includes equity variants and crypto in risk assets, matching the Money Forward category names', () => {
+      const row = Code.computeSnapshotRow_(
+        {
+          breakdown: [
+            { category: '預金・現金', amount_yen: '1000' },
+            { category: '株式(現物)', amount_yen: '2000' },
+            { category: '株式(信用)', amount_yen: '700' },
+            { category: '投資信託', amount_yen: '3000' },
+            { category: '暗号資産', amount_yen: '600' },
+            { category: '年金', amount_yen: '4000' },
+            { category: 'ポイント', amount_yen: '500' },
+          ],
+          'total-liability': [{ total_yen: '0' }],
+        },
+        [],
+        '2026-01',
+      );
+
+      expect(row.total_assets).toBe(11800);
+      expect(row.cash).toBe(1000);
+      expect(row.risk_assets).toBe(10300);
     });
 
     it('tolerates missing datasets', () => {
