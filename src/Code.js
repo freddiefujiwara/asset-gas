@@ -148,6 +148,288 @@ const validateShareToken_ = token => {
   return null;
 };
 
+// --- Monthly snapshots ---
+// Once a month, the headline figures (total assets, total liabilities,
+// net assets, cash, risk assets, and the trailing-12-month averages of
+// living cost and income) are recorded as one row in snapshots.csv in
+// the same data folder. Because the file is a CSV in the data folder,
+// the generic CSV pipeline already returns it in the API response under
+// the "snapshots" key, so no response plumbing is needed. Rows are
+// upserted by month: re-running for an existing month replaces its row
+// instead of appending a duplicate.
+
+const SNAPSHOT_FILE_NAME = 'snapshots.csv';
+const SNAPSHOT_HEADERS = [
+  'month',
+  'total_assets',
+  'total_liabilities',
+  'net_assets',
+  'cash',
+  'risk_assets',
+  'living_cost_12m_avg',
+  'income_12m_avg',
+];
+const SNAPSHOT_CASH_CATEGORY = '現金・預金';
+const SNAPSHOT_RISK_CATEGORIES = ['株式', '投資信託', '年金'];
+
+// Expense classification keywords. These mirror the client-side rules
+// in freddiefujiwara/asset (src/domain/cashFlow/classifiers.js and
+// constants.js) so the averages recorded here match the figures the
+// cash-flow screen displays.
+const SNAPSHOT_FIXED_CATEGORY_KEYWORDS = [
+  '住宅/ローン返済',
+  '住宅/管理費',
+  '水道・光熱費',
+  '教養・教育/学費',
+  '保険/',
+  '通信費/',
+  '健康・医療/',
+  '食費/食費',
+  '食費/食料品',
+  '日用品/',
+  '衣服・美容/美容院・理髪',
+];
+const SNAPSHOT_EXCLUDE_CATEGORY_KEYWORDS = [
+  'カード引き落とし',
+  'ATM引き出し',
+  '電子マネー',
+  '使途不明金',
+  '収入/',
+];
+
+const parseYenValue_ = (value) => {
+  const number = Number(String(value ?? '').replace(/[^0-9.\-]/g, ''));
+  return Number.isFinite(number) ? number : 0;
+};
+
+export function classifySnapshotExpenseType_(item) {
+  const category = String(item?.category ?? '');
+
+  if (item?.is_transfer) return 'exclude';
+  if (category.startsWith('特別な支出')) return 'exclude';
+  if (category.startsWith('現金')) return 'exclude';
+  if (category.startsWith('カード')) return 'exclude';
+  if (SNAPSHOT_EXCLUDE_CATEGORY_KEYWORDS.some((keyword) => category.includes(keyword))) {
+    return 'exclude';
+  }
+  if (SNAPSHOT_FIXED_CATEGORY_KEYWORDS.some((keyword) => category.includes(keyword))) {
+    return 'fixed';
+  }
+  return 'variable';
+}
+
+const snapshotMonthWindow_ = (monthKey) => {
+  const [year, month] = String(monthKey).split('-').map((part) => parseInt(part, 10));
+  const months = [];
+  for (let offset = 11; offset >= 0; offset -= 1) {
+    const date = new Date(Date.UTC(year, month - 1 - offset, 1));
+    const y = date.getUTCFullYear();
+    const m = String(date.getUTCMonth() + 1).padStart(2, '0');
+    months.push(`${y}-${m}`);
+  }
+  return months;
+};
+
+/**
+ * Trailing-12-month averages of income and living cost (fixed +
+ * variable expenses), over the 12 months ending at monthKey
+ * ('YYYY-MM'). Months without any non-transfer entries do not count
+ * toward the divisor, mirroring the client-side aggregation.
+ */
+export function computeSnapshotAverages_(mfcfEntries, monthKey) {
+  const windowMonths = new Set(snapshotMonthWindow_(monthKey));
+  const monthly = {};
+
+  (Array.isArray(mfcfEntries) ? mfcfEntries : []).forEach((item) => {
+    if (item?.is_transfer) {
+      return;
+    }
+    const month = String(item?.date || '').slice(0, 7);
+    if (!windowMonths.has(month)) {
+      return;
+    }
+    if (!monthly[month]) {
+      monthly[month] = { income: 0, livingCost: 0 };
+    }
+    const amount = Number(item?.amount) || 0;
+    if (amount > 0) {
+      monthly[month].income += amount;
+    } else if (amount < 0) {
+      const type = classifySnapshotExpenseType_(item);
+      if (type === 'fixed' || type === 'variable') {
+        monthly[month].livingCost += Math.abs(amount);
+      }
+    }
+  });
+
+  const months = Object.keys(monthly);
+  if (months.length === 0) {
+    return { livingCostAverage: 0, incomeAverage: 0, monthCount: 0 };
+  }
+
+  const incomeTotal = months.reduce((sum, month) => sum + monthly[month].income, 0);
+  const livingCostTotal = months.reduce((sum, month) => sum + monthly[month].livingCost, 0);
+
+  return {
+    livingCostAverage: Math.round(livingCostTotal / months.length),
+    incomeAverage: Math.round(incomeTotal / months.length),
+    monthCount: months.length,
+  };
+}
+
+/**
+ * Build one snapshot row for monthKey ('YYYY-MM') from the same data
+ * the API serves: total assets is the sum of the breakdown rows (the
+ * same total the balance sheet shows), and total liabilities is the
+ * total-liability figure.
+ */
+export function computeSnapshotRow_(allData, mfcfEntries, monthKey) {
+  const breakdown = Array.isArray(allData?.breakdown) ? allData.breakdown : [];
+  let totalAssets = 0;
+  let cash = 0;
+  let riskAssets = 0;
+
+  breakdown.forEach((row) => {
+    const amount = parseYenValue_(row?.amount_yen);
+    totalAssets += amount;
+    const category = String(row?.category ?? '');
+    if (category === SNAPSHOT_CASH_CATEGORY) {
+      cash += amount;
+    }
+    if (SNAPSHOT_RISK_CATEGORIES.includes(category)) {
+      riskAssets += amount;
+    }
+  });
+
+  const liabilityRows = Array.isArray(allData?.['total-liability'])
+    ? allData['total-liability']
+    : [];
+  const totalLiabilities = liabilityRows.length > 0
+    ? parseYenValue_(liabilityRows[0]?.total_yen)
+    : 0;
+
+  const averages = computeSnapshotAverages_(mfcfEntries, monthKey);
+
+  return {
+    month: monthKey,
+    total_assets: totalAssets,
+    total_liabilities: totalLiabilities,
+    net_assets: totalAssets - totalLiabilities,
+    cash,
+    risk_assets: riskAssets,
+    living_cost_12m_avg: averages.livingCostAverage,
+    income_12m_avg: averages.incomeAverage,
+  };
+}
+
+const findSnapshotFile_ = () => {
+  const folder = DriveApp.getFolderById(dataFolderId_());
+  const files = folder.getFilesByName(SNAPSHOT_FILE_NAME);
+  return files.hasNext() ? files.next() : null;
+};
+
+const snapshotRowToCsvLine_ = (row) =>
+  SNAPSHOT_HEADERS.map((header) => String(row[header] ?? '')).join(',');
+
+/**
+ * Insert the row into snapshots.csv, replacing the existing row for
+ * the same month when present. Data lines are kept sorted by month.
+ */
+export function upsertSnapshotRow_(row) {
+  const file = findSnapshotFile_();
+  const existingLines = file
+    ? file.getBlob().getDataAsString('UTF-8').split('\n').filter((line) => line.trim() !== '')
+    : [];
+  const dataLines = existingLines.filter(
+    (line, index) => !(index === 0 && line.startsWith('month,')),
+  );
+
+  const monthPrefix = `${row.month},`;
+  const existingIndex = dataLines.findIndex((line) => line.startsWith(monthPrefix));
+  if (existingIndex >= 0) {
+    dataLines[existingIndex] = snapshotRowToCsvLine_(row);
+  } else {
+    dataLines.push(snapshotRowToCsvLine_(row));
+  }
+  dataLines.sort();
+
+  const content = `${[SNAPSHOT_HEADERS.join(','), ...dataLines].join('\n')}\n`;
+  if (file) {
+    file.setContent(content);
+  } else {
+    DriveApp.getFolderById(dataFolderId_()).createFile(SNAPSHOT_FILE_NAME, content, 'text/csv');
+  }
+  return row;
+}
+
+const formatMonthKey_ = (date) =>
+  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+
+const normalizeSnapshotMonthKey_ = (monthKey) => {
+  if (monthKey === undefined || monthKey === null || monthKey === '') {
+    return formatMonthKey_(new Date());
+  }
+  const normalized = String(monthKey).trim();
+  if (/^\d{4}-\d{2}$/.test(normalized)) {
+    return normalized;
+  }
+  const compact = normalized.match(/^(\d{4})(\d{2})$/);
+  if (compact) {
+    return `${compact[1]}-${compact[2]}`;
+  }
+  throw new Error(`invalid month key: ${monthKey}`);
+};
+
+/**
+ * Create (or refresh) the snapshot row for the given month. Accepts
+ * 'YYYY-MM' or 'YYYYMM'; with no argument it targets the current
+ * month, which is how the first row is created manually from the
+ * Apps Script editor.
+ */
+export function createSnapshotForMonth(monthKey) {
+  const targetMonth = normalizeSnapshotMonthKey_(monthKey);
+  const allData = getAllCsvDataInFolder_();
+  const mfcfEntries = getAllXmlDataEntries_();
+  const row = computeSnapshotRow_(allData, mfcfEntries, targetMonth);
+  upsertSnapshotRow_(row);
+  return row;
+}
+
+/**
+ * Monthly trigger entry point: records the previous month's snapshot.
+ * Run on the 1st of each month, after the source data files have been
+ * refreshed for the new month.
+ */
+export function createMonthlySnapshot() {
+  const now = new Date();
+  const previousMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  return createSnapshotForMonth(formatMonthKey_(previousMonth));
+}
+
+/**
+ * One-time setup helper: run this once from the Apps Script editor to
+ * (re)install the monthly time-driven trigger for createMonthlySnapshot
+ * (1st of each month, 07:00-08:00, project time zone). Existing
+ * triggers for the same handler are removed first.
+ */
+export function installMonthlySnapshotTrigger() {
+  ScriptApp.getProjectTriggers()
+    .filter((trigger) => trigger.getHandlerFunction() === 'createMonthlySnapshot')
+    .forEach((trigger) => ScriptApp.deleteTrigger(trigger));
+
+  const trigger = ScriptApp.newTrigger('createMonthlySnapshot')
+    .timeBased()
+    .onMonthDay(1)
+    .atHour(7)
+    .create();
+
+  return {
+    installed: true,
+    handler: 'createMonthlySnapshot',
+    triggerId: trigger.getUniqueId(),
+  };
+}
+
 export function preCacheAll() {
   const cache = CacheService.getScriptCache();
 
