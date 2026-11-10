@@ -667,7 +667,7 @@ Then re-authorize with deploying account (because executeAs is USER_DEPLOYING).
   - script.external_request
 - webapp:
   - executeAs: `USER_DEPLOYING`
-  - access: `ANYONE`
+  - access: `ANYONE_ANONYMOUS`
 
 ---
 
@@ -675,7 +675,7 @@ Then re-authorize with deploying account (because executeAs is USER_DEPLOYING).
 
 ## 11.1 Access level
 
-Web App access is `ANYONE`, but application-level auth gate is inside `doGet`.
+Web App access is `ANYONE_ANONYMOUS`, and the application-level auth gate is inside `doGet`.
 So practical access is controlled by ID token + allow list.
 
 ## 11.2 Token verification endpoint
@@ -748,6 +748,58 @@ Goal of tests:
   - or query: `id_token=<id_token>`
 - Main output: merged CSV datasets + `mfcf` transactions
 
+
+---
+
+## 17. Monthly Snapshots
+
+### 17.1 Purpose
+
+The API normally returns only the current figures, so clients cannot
+show how the household position moved since the end of last month.
+A monthly snapshot records the headline figures as one CSV row per
+month.
+
+### 17.2 Storage
+
+- File: `snapshots.csv` in the same data folder as the other CSVs.
+- Because it is a CSV in the data folder, the generic CSV pipeline
+  returns it in the API response under the `snapshots` key (values are
+  strings, like all CSV data in this API). No response plumbing or
+  cache change is needed; the rows join the normal 6-hour cache.
+- Columns:
+  - `month`: `YYYY-MM` the row describes (figures as of that month's end)
+  - `total_assets`: sum of the `breakdown` rows' `amount_yen`
+  - `total_liabilities`: `total-liability` total (`total_yen`)
+  - `net_assets`: `total_assets - total_liabilities`
+  - `cash`: the `現金・預金` breakdown row
+  - `risk_assets`: `株式` + `投資信託` + `年金` breakdown rows
+  - `living_cost_12m_avg`: average monthly living cost (fixed +
+    variable expenses) over the trailing 12 months ending at `month`
+  - `income_12m_avg`: average monthly income over the same window
+- The averages use the same expense classification rules as the
+  client (freddiefujiwara/asset, `src/domain/cashFlow`), and the
+  divisor is the number of months that have non-transfer entries in
+  the window.
+- Rows are upserted by month and kept sorted: re-running for an
+  existing month replaces its row instead of duplicating it. This
+  makes it safe to create a provisional row mid-month and let the
+  monthly run refresh it with month-end data.
+
+### 17.3 Entry points
+
+- `createMonthlySnapshot()`: trigger handler. Records the previous
+  month's row from the current data files. Intended to run on the 1st
+  of each month, after the source data files have been refreshed.
+- `createSnapshotForMonth(monthKey)`: manual creation for a specific
+  month (`YYYY-MM` or `YYYYMM`). With no argument it targets the
+  current month.
+- `installMonthlySnapshotTrigger()`: one-time setup. Run it once from
+  the Apps Script editor to install the monthly time-driven trigger
+  (1st of each month, 07:00-08:00, project time zone). It removes
+  existing triggers for the same handler first. Trigger installation
+  cannot be done by clasp push, so this manual step is required once
+  per project (production; the staging project does not need it).
 
 ## Staging environment
 
