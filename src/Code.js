@@ -169,8 +169,20 @@ const SNAPSHOT_HEADERS = [
   'living_cost_12m_avg',
   'income_12m_avg',
 ];
-const SNAPSHOT_CASH_CATEGORY = '現金・預金';
-const SNAPSHOT_RISK_CATEGORIES = ['株式', '投資信託', '年金'];
+// Category names in breakdown.csv are the ones Money Forward emits,
+// which differ from the labels the client displays (the front end
+// shows '現金・預金' for what the data calls '預金・現金'). The
+// matching below is against the names in the data.
+const SNAPSHOT_CASH_CATEGORY = '預金・現金';
+// Risk assets are summed from exact category names, plus a prefix
+// match for equities so that variants such as '株式(現物)' and a
+// future '株式(信用)' are all included.
+const SNAPSHOT_RISK_CATEGORIES = ['投資信託', '年金', '暗号資産'];
+const SNAPSHOT_RISK_CATEGORY_PREFIX = '株式';
+
+const isSnapshotRiskCategory_ = (category) =>
+  category.startsWith(SNAPSHOT_RISK_CATEGORY_PREFIX)
+  || SNAPSHOT_RISK_CATEGORIES.includes(category);
 
 // Expense classification keywords. These mirror the client-side rules
 // in freddiefujiwara/asset (src/domain/cashFlow/classifiers.js and
@@ -296,7 +308,7 @@ export function computeSnapshotRow_(allData, mfcfEntries, monthKey) {
     if (category === SNAPSHOT_CASH_CATEGORY) {
       cash += amount;
     }
-    if (SNAPSHOT_RISK_CATEGORIES.includes(category)) {
+    if (isSnapshotRiskCategory_(category)) {
       riskAssets += amount;
     }
   });

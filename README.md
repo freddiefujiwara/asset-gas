@@ -772,8 +772,11 @@ month.
   - `total_assets`: sum of the `breakdown` rows' `amount_yen`
   - `total_liabilities`: `total-liability` total (`total_yen`)
   - `net_assets`: `total_assets - total_liabilities`
-  - `cash`: the `現金・預金` breakdown row
-  - `risk_assets`: `株式` + `投資信託` + `年金` breakdown rows
+  - `cash`: the `預金・現金` breakdown row
+  - `risk_assets`: categories starting with `株式` (e.g. `株式(現物)`)
+    plus the `投資信託`, `年金` and `暗号資産` breakdown rows.
+    Category matching uses the names Money Forward writes into
+    `breakdown.csv`, not the labels the client displays
   - `living_cost_12m_avg`: average monthly living cost (fixed +
     variable expenses) over the trailing 12 months ending at `month`
   - `income_12m_avg`: average monthly income over the same window
