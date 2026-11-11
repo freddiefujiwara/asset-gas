@@ -47,14 +47,14 @@ const SHARE_FILE_NAME = 'asset-share-sessions.json';
 // One month, so the owner can hand out a link well before it is needed.
 const SHARE_TTL_SECONDS = 30 * 24 * 60 * 60;
 
-const findShareFile_ = () => {
+const findSessionFile_ = fileName => {
   const folder = DriveApp.getFolderById(dataFolderId_());
-  const files = folder.getFilesByName(SHARE_FILE_NAME);
+  const files = folder.getFilesByName(fileName);
   return files.hasNext() ? files.next() : null;
 };
 
-const readShareRecords_ = () => {
-  const file = findShareFile_();
+const readSessionRecords_ = fileName => {
+  const file = findSessionFile_(fileName);
   if (!file) {
     return [];
   }
@@ -62,20 +62,26 @@ const readShareRecords_ = () => {
     const records = JSON.parse(file.getBlob().getDataAsString());
     return Array.isArray(records) ? records : [];
   } catch (e) {
-    // A corrupt share file is treated as having no sessions.
+    // A corrupt session file is treated as having no sessions.
     return [];
   }
 };
 
-const writeShareRecords_ = records => {
+const writeSessionRecords_ = (fileName, records) => {
   const content = JSON.stringify(records);
-  const file = findShareFile_();
+  const file = findSessionFile_(fileName);
   if (file) {
     file.setContent(content);
     return;
   }
-  DriveApp.getFolderById(dataFolderId_()).createFile(SHARE_FILE_NAME, content, 'application/json');
+  DriveApp.getFolderById(dataFolderId_()).createFile(fileName, content, 'application/json');
 };
+
+const findShareFile_ = () => findSessionFile_(SHARE_FILE_NAME);
+
+const readShareRecords_ = () => readSessionRecords_(SHARE_FILE_NAME);
+
+const writeShareRecords_ = records => writeSessionRecords_(SHARE_FILE_NAME, records);
 
 const hashShareToken_ = token =>
   Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(token))
@@ -83,7 +89,7 @@ const hashShareToken_ = token =>
     .map(byte => byte.toString(16).padStart(2, '0'))
     .join('');
 
-const revokeActiveShareSessions_ = (records, nowIso) => {
+const revokeActiveSessions_ = (records, nowIso) => {
   records.forEach(record => {
     if (!record.revoked_at && record.expires_at && record.expires_at > nowIso) {
       record.revoked_at = nowIso;
@@ -91,12 +97,14 @@ const revokeActiveShareSessions_ = (records, nowIso) => {
   });
 };
 
-const issueShareSession_ = () => {
+const revokeActiveShareSessions_ = revokeActiveSessions_;
+
+const issueSession_ = (fileName, tokenKey) => {
   const now = new Date();
   const nowIso = now.toISOString();
   const expiresIso = new Date(now.getTime() + SHARE_TTL_SECONDS * 1000).toISOString();
-  const records = readShareRecords_();
-  revokeActiveShareSessions_(records, nowIso);
+  const records = readSessionRecords_(fileName);
+  revokeActiveSessions_(records, nowIso);
   const token = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
   records.push({
     token_hash: hashShareToken_(token),
@@ -106,14 +114,16 @@ const issueShareSession_ = () => {
     access_count: 0,
     last_accessed_at: '',
   });
-  writeShareRecords_(records);
+  writeSessionRecords_(fileName, records);
   return {
-    share_token: token,
+    [tokenKey]: token,
     issued_at: nowIso,
     expires_at: expiresIso,
     ttl_seconds: SHARE_TTL_SECONDS,
   };
 };
+
+const issueShareSession_ = () => issueSession_(SHARE_FILE_NAME, 'share_token');
 
 const revokeShareSession_ = () => {
   const records = readShareRecords_();
@@ -122,12 +132,12 @@ const revokeShareSession_ = () => {
   return { revoked: true };
 };
 
-const validateShareToken_ = token => {
+const validateSessionToken_ = (fileName, token) => {
   if (!token) {
     return null;
   }
   const hash = hashShareToken_(token);
-  const records = readShareRecords_();
+  const records = readSessionRecords_(fileName);
   const nowIso = new Date().toISOString();
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
@@ -142,10 +152,55 @@ const validateShareToken_ = token => {
     }
     record.access_count = Number(record.access_count || 0) + 1;
     record.last_accessed_at = nowIso;
-    writeShareRecords_(records);
+    writeSessionRecords_(fileName, records);
     return { expires_at: record.expires_at };
   }
   return null;
+};
+
+const validateShareToken_ = token => validateSessionToken_(SHARE_FILE_NAME, token);
+
+// --- Owner sessions (long-lived sign-in) ---
+// Google ID tokens expire after about an hour, which used to drop the
+// owner back at the sign-in gate. After a Google sign-in the frontend
+// exchanges the ID token for one of these 30-day owner sessions (same
+// storage scheme as share sessions, separate file) and uses it for all
+// later calls. Issuing a new one revokes the previous ones, and the
+// frontend revokes its session on logout.
+
+const OWNER_FILE_NAME = 'asset-owner-sessions.json';
+
+const issueOwnerSession_ = () => issueSession_(OWNER_FILE_NAME, 'session_token');
+
+const validateOwnerToken_ = token => validateSessionToken_(OWNER_FILE_NAME, token);
+
+const revokeOwnerSession_ = token => {
+  if (token) {
+    const hash = hashShareToken_(token);
+    const records = readSessionRecords_(OWNER_FILE_NAME);
+    const nowIso = new Date().toISOString();
+    let changed = false;
+    records.forEach(record => {
+      if (record.token_hash === hash && !record.revoked_at) {
+        record.revoked_at = nowIso;
+        changed = true;
+      }
+    });
+    if (changed) {
+      writeSessionRecords_(OWNER_FILE_NAME, records);
+    }
+  }
+  return { revoked: true };
+};
+
+// Owner proof for owner-only actions: a valid Google ID token, or a
+// live owner session token (the post-sign-in steady state).
+const requireOwnerAuth_ = e => {
+  const sessionToken = e?.parameter?.session_token;
+  if (sessionToken && validateOwnerToken_(sessionToken)) {
+    return;
+  }
+  verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
 };
 
 // --- Monthly snapshots ---
@@ -490,14 +545,29 @@ export function doGet(e) {
     if (!isDebugMode_()) {
       const action = parameters?.action;
 
-      if (action === 'issue_share' || action === 'revoke_share') {
+      if (action === 'exchange_session') {
         verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
+        return createJsonResponse_(JSON.stringify(issueOwnerSession_()));
+      }
+
+      if (action === 'revoke_session') {
+        return createJsonResponse_(
+          JSON.stringify(revokeOwnerSession_(parameters?.session_token || '')),
+        );
+      }
+
+      if (action === 'issue_share' || action === 'revoke_share') {
+        requireOwnerAuth_(e);
         return createJsonResponse_(
           JSON.stringify(action === 'issue_share' ? issueShareSession_() : revokeShareSession_()),
         );
       }
 
-      if (parameters?.share_token) {
+      if (parameters?.session_token) {
+        if (!validateOwnerToken_(parameters.session_token)) {
+          throw new Error('session expired or invalid');
+        }
+      } else if (parameters?.share_token) {
         shareSession = validateShareToken_(parameters.share_token);
         if (!shareSession) {
           throw new Error('share session expired or invalid');
