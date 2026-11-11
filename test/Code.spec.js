@@ -1175,6 +1175,126 @@ describe('Code.js', () => {
     });
   });
 
+  describe('owner sessions', () => {
+    let filesByName;
+    let uuidCounter = 0;
+
+    const hashOf = (token) =>
+      Array.from({ length: 32 }, (_, i) => token.charCodeAt(i % token.length) % 128)
+        .map((b) => b.toString(16).padStart(2, '0'))
+        .join('');
+
+    const lastJson = () => JSON.parse(global.ContentService.createTextOutput.mock.calls.at(-1)[0]);
+
+    const createMockFiles = (filesArray) => {
+      let index = 0;
+      return {
+        hasNext: vi.fn(() => index < filesArray.length),
+        next: vi.fn(() => filesArray[index++]),
+      };
+    };
+
+    const makeFile = (name) => ({
+      getName: vi.fn(() => name),
+      getMimeType: vi.fn(() => 'application/json'),
+      getBlob: vi.fn(() => ({ getDataAsString: vi.fn(() => filesByName[name]) })),
+      setContent: vi.fn((content) => { filesByName[name] = content; }),
+    });
+
+    const exchange = () => {
+      Code.doGet({
+        parameter: { action: 'exchange_session' },
+        headers: { Authorization: 'Bearer owner-token' },
+      });
+      return lastJson().session_token;
+    };
+
+    const ownerRecords = () => JSON.parse(filesByName['asset-owner-sessions.json']);
+
+    beforeEach(() => {
+      scriptProperties.DEBUG = 'false';
+      uuidCounter = 0;
+      filesByName = {};
+
+      const csvFiles = [
+        {
+          getName: () => 'assetClassRatio.csv',
+          getBlob: () => ({ getDataAsString: () => 'timestamp,y,other\n2023-01-01,20,val' }),
+        },
+      ];
+      const mockFolder = {
+        getFiles: vi.fn(() => createMockFiles([...csvFiles])),
+        getFilesByName: vi.fn((name) =>
+          createMockFiles(filesByName[name] != null ? [makeFile(name)] : [])),
+        createFile: vi.fn((name, content) => {
+          filesByName[name] = content;
+          return makeFile(name);
+        }),
+      };
+      global.DriveApp.getFolderById.mockReturnValue(mockFolder);
+
+      global.Utilities = {
+        ...global.Utilities,
+        DigestAlgorithm: { SHA_256: 'SHA_256' },
+        computeDigest: vi.fn((algo, str) =>
+          Array.from({ length: 32 }, (_, i) => String(str).charCodeAt(i % String(str).length) % 128)),
+        getUuid: vi.fn(() => `00000000-0000-4000-8000-${String(++uuidCounter).padStart(12, '0')}`),
+      };
+    });
+
+    it('requires an ID token to exchange for an owner session', () => {
+      Code.doGet({ parameter: { action: 'exchange_session' }, headers: {} });
+      expect(lastJson()).toEqual({ status: 401, error: 'missing id token' });
+    });
+
+    it('issues a 30-day owner session and stores only its hash', () => {
+      const token = exchange();
+      expect(lastJson().ttl_seconds).toBe(30 * 24 * 60 * 60);
+      expect(token).toMatch(/^[0-9a-f]{64}$/);
+      const records = ownerRecords();
+      expect(records).toHaveLength(1);
+      expect(records[0].token_hash).toBe(hashOf(token));
+      expect(filesByName['asset-owner-sessions.json']).not.toContain(token);
+    });
+
+    it('serves data with a valid owner session token', () => {
+      const token = exchange();
+      Code.doGet({ parameter: { session_token: token } });
+      const data = lastJson();
+      expect(data.assetClassRatio).toEqual([{ other: 'val', amount_yen: '20' }]);
+      expect(ownerRecords()[0].access_count).toBe(1);
+    });
+
+    it('rejects an unknown owner session token', () => {
+      Code.doGet({ parameter: { session_token: 'no-such-token' } });
+      expect(lastJson()).toEqual({ status: 401, error: 'session expired or invalid' });
+    });
+
+    it('revokes the previous owner session when a new one is exchanged', () => {
+      const first = exchange();
+      const second = exchange();
+      expect(first).not.toBe(second);
+      Code.doGet({ parameter: { session_token: first } });
+      expect(lastJson()).toEqual({ status: 401, error: 'session expired or invalid' });
+      Code.doGet({ parameter: { session_token: second } });
+      expect(lastJson().assetClassRatio).toEqual([{ other: 'val', amount_yen: '20' }]);
+    });
+
+    it('revokes the owner session via the revoke_session action', () => {
+      const token = exchange();
+      Code.doGet({ parameter: { action: 'revoke_session', session_token: token } });
+      expect(lastJson()).toEqual({ revoked: true });
+      Code.doGet({ parameter: { session_token: token } });
+      expect(lastJson()).toEqual({ status: 401, error: 'session expired or invalid' });
+    });
+
+    it('accepts an owner session as proof for issuing a share link', () => {
+      const token = exchange();
+      Code.doGet({ parameter: { action: 'issue_share', session_token: token } });
+      expect(lastJson().share_token).toMatch(/^[0-9a-f]{64}$/);
+    });
+  });
+
   describe('data folder override (staging)', () => {
     it('uses the production folder when DATA_FOLDER_ID is unset', () => {
       Code.getAllXmlDataEntries_();
