@@ -77,8 +77,6 @@ const writeSessionRecords_ = (fileName, records) => {
   DriveApp.getFolderById(dataFolderId_()).createFile(fileName, content, 'application/json');
 };
 
-const findShareFile_ = () => findSessionFile_(SHARE_FILE_NAME);
-
 const readShareRecords_ = () => readSessionRecords_(SHARE_FILE_NAME);
 
 const writeShareRecords_ = records => writeSessionRecords_(SHARE_FILE_NAME, records);
