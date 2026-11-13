@@ -97,14 +97,12 @@ const revokeActiveSessions_ = (records, nowIso) => {
 
 const revokeActiveShareSessions_ = revokeActiveSessions_;
 
-const issueSession_ = (fileName, tokenKey, { revokePrevious = true } = {}) => {
+const issueSession_ = (fileName, tokenKey) => {
   const now = new Date();
   const nowIso = now.toISOString();
   const expiresIso = new Date(now.getTime() + SHARE_TTL_SECONDS * 1000).toISOString();
   const records = readSessionRecords_(fileName);
-  if (revokePrevious) {
-    revokeActiveSessions_(records, nowIso);
-  }
+  revokeActiveSessions_(records, nowIso);
   const token = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
   records.push({
     token_hash: hashShareToken_(token),
@@ -165,14 +163,12 @@ const validateShareToken_ = token => validateSessionToken_(SHARE_FILE_NAME, toke
 // owner back at the sign-in gate. After a Google sign-in the frontend
 // exchanges the ID token for one of these 30-day owner sessions (same
 // storage scheme as share sessions, separate file) and uses it for all
-// later calls. Owner sessions coexist across devices: issuing a new
-// one does not revoke the previous ones, and the frontend revokes its
-// own session on logout.
+// later calls. Issuing a new one revokes the previous ones, and the
+// frontend revokes its session on logout.
 
 const OWNER_FILE_NAME = 'asset-owner-sessions.json';
 
-const issueOwnerSession_ = () =>
-  issueSession_(OWNER_FILE_NAME, 'session_token', { revokePrevious: false });
+const issueOwnerSession_ = () => issueSession_(OWNER_FILE_NAME, 'session_token');
 
 const validateOwnerToken_ = token => validateSessionToken_(OWNER_FILE_NAME, token);
 
@@ -538,45 +534,48 @@ export function doGet(e) {
   try {
     const parameters = e?.parameter;
 
-    if (parameters?.f === 'preCacheAll') {
-      return createJsonResponse_(JSON.stringify(preCacheAll()));
-    }
-
     let shareSession = null;
 
-    if (!isDebugMode_()) {
-      const action = parameters?.action;
+    const action = parameters?.action;
 
-      if (action === 'exchange_session') {
-        verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
-        return createJsonResponse_(JSON.stringify(issueOwnerSession_()));
-      }
+    if (action === 'exchange_session') {
+      verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
+      return createJsonResponse_(JSON.stringify(issueOwnerSession_()));
+    }
 
-      if (action === 'revoke_session') {
-        return createJsonResponse_(
-          JSON.stringify(revokeOwnerSession_(parameters?.session_token || '')),
-        );
-      }
+    if (action === 'revoke_session') {
+      return createJsonResponse_(
+        JSON.stringify(revokeOwnerSession_(parameters?.session_token || '')),
+      );
+    }
 
-      if (action === 'issue_share' || action === 'revoke_share') {
-        requireOwnerAuth_(e);
-        return createJsonResponse_(
-          JSON.stringify(action === 'issue_share' ? issueShareSession_() : revokeShareSession_()),
-        );
-      }
+    if (action === 'issue_share' || action === 'revoke_share') {
+      requireOwnerAuth_(e);
+      return createJsonResponse_(
+        JSON.stringify(action === 'issue_share' ? issueShareSession_() : revokeShareSession_()),
+      );
+    }
 
-      if (parameters?.session_token) {
-        if (!validateOwnerToken_(parameters.session_token)) {
-          throw new Error('session expired or invalid');
-        }
-      } else if (parameters?.share_token) {
-        shareSession = validateShareToken_(parameters.share_token);
-        if (!shareSession) {
-          throw new Error('share session expired or invalid');
-        }
-      } else {
-        verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
+    if (parameters?.session_token) {
+      if (!validateOwnerToken_(parameters.session_token)) {
+        throw new Error('session expired or invalid');
       }
+    } else if (parameters?.share_token) {
+      shareSession = validateShareToken_(parameters.share_token);
+      if (!shareSession) {
+        throw new Error('share session expired or invalid');
+      }
+    } else {
+      verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
+    }
+
+    // Cache warming rebuilds the whole aggregated cache from Drive;
+    // it sits behind the same authentication as the data itself so an
+    // anonymous caller cannot burn the script quota with it. (The
+    // preCacheAll function itself stays callable from the editor and
+    // from time-driven triggers, which run as the owner.)
+    if (parameters?.f === 'preCacheAll') {
+      return createJsonResponse_(JSON.stringify(preCacheAll()));
     }
 
     if (isNoCacheMode_()) {
@@ -1008,10 +1007,6 @@ function getScriptProperty_(key) {
   }
 
   return properties.getProperty(key) || '';
-}
-
-function isDebugMode_() {
-  return getScriptProperty_('DEBUG') === 'true';
 }
 
 function isNoCacheMode_() {

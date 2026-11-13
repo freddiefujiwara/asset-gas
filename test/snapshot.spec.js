@@ -93,6 +93,20 @@ describe('Monthly snapshots', () => {
       })),
     };
 
+    global.UrlFetchApp = {
+      fetch: vi.fn(() => ({
+        getResponseCode: () => 200,
+        getContentText: () => JSON.stringify({
+          iss: 'accounts.google.com',
+          aud: 'client-id',
+          exp: `${Math.floor(Date.now() / 1000) + 3600}`,
+          email_verified: 'true',
+          email: 'allowed@example.com',
+          sub: 'sub-id',
+        }),
+      })),
+    };
+
     const mockTextOutput = {
       setMimeType: vi.fn().mockReturnThis(),
       getContent: vi.fn(),
@@ -395,7 +409,7 @@ describe('Monthly snapshots', () => {
         '',
       ].join('\n');
 
-      Code.doGet({ parameter: {} });
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token-value' } });
 
       const payload = JSON.parse(
         global.ContentService.createTextOutput.mock.calls.at(-1)[0],
