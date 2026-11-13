@@ -460,20 +460,23 @@ describe('Code.js', () => {
       no_cache: true,
     };
     it('should return all CSV data keyed by filename when no parameters are provided', () => {
-      const e = { parameter: {} };
+      const e = { parameter: {}, headers: { Authorization: 'Bearer token-value' } };
       Code.doGet(e);
 
       expect(global.DriveApp.getFolderById).toHaveBeenCalledWith('19PDxxar-38XMlBiYC02lDb1bJh3wJRkh');
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify(EXPECTED_LIVE_DATA_RESPONSE));
     });
 
-    it('should return all CSV data when e is null', () => {
+    it('should return 401 when e is null', () => {
       Code.doGet(null);
-      expect(global.DriveApp.getFolderById).toHaveBeenCalled();
+      expect(global.DriveApp.getFolderById).not.toHaveBeenCalled();
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 401, error: 'missing id token' }),
+      );
     });
 
     it('should return all CSV data when e.parameter is null', () => {
-      Code.doGet({ parameter: null });
+      Code.doGet({ parameter: null, headers: { Authorization: 'Bearer token-value' } });
       expect(global.DriveApp.getFolderById).toHaveBeenCalled();
     });
 
@@ -490,7 +493,7 @@ describe('Code.js', () => {
         return null;
       });
 
-      Code.doGet({ parameter: {} });
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token-value' } });
 
       expect(cache.get).toHaveBeenCalledWith('0');
       expect(cache.get).toHaveBeenCalledWith('mfcf');
@@ -508,7 +511,7 @@ describe('Code.js', () => {
       scriptProperties.NO_CACHE = 'true';
       const cache = global.CacheService.getScriptCache();
 
-      Code.doGet({ parameter: {} });
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token-value' } });
 
       expect(cache.get).not.toHaveBeenCalled();
       expect(global.DriveApp.getFolderById).toHaveBeenCalled();
@@ -523,7 +526,7 @@ describe('Code.js', () => {
         return null;
       });
 
-      Code.doGet({ parameter: {} });
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token-value' } });
 
       expect(global.DriveApp.getFolderById).toHaveBeenCalled();
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify(EXPECTED_LIVE_DATA_RESPONSE));
@@ -536,22 +539,27 @@ describe('Code.js', () => {
     it('should fallback to folder data when CacheService is unavailable', () => {
       delete global.CacheService;
 
-      Code.doGet({ parameter: {} });
+      Code.doGet({ parameter: {}, headers: { Authorization: 'Bearer token-value' } });
 
       expect(global.DriveApp.getFolderById).toHaveBeenCalled();
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify(EXPECTED_LIVE_DATA_RESPONSE));
     });
 
     it('should return all CSV data when other parameters are provided', () => {
-      const e = { parameter: { unknown: 'value' } };
+      const e = { parameter: { unknown: 'value' }, headers: { Authorization: 'Bearer token-value' } };
       Code.doGet(e);
 
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify(EXPECTED_LIVE_DATA_RESPONSE));
     });
 
-    it('should skip auth when DEBUG is true', () => {
-      Code.doGet({ parameter: {} });
-      expect(global.UrlFetchApp.fetch).not.toHaveBeenCalled();
+    it('should not skip auth even when DEBUG is true', () => {
+      scriptProperties.DEBUG = 'true';
+      Code.doGet({ parameter: {}, headers: {} });
+
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 401, error: 'missing id token' }),
+      );
+      expect(global.DriveApp.getFolderById).not.toHaveBeenCalled();
     });
 
     it('should validate auth token when DEBUG is not true', () => {
@@ -817,12 +825,21 @@ describe('Code.js', () => {
       );
     });
 
-    it('should handle f=preCacheAll and bypass auth', () => {
-      scriptProperties.DEBUG = 'false';
-      const e = { parameter: { f: 'preCacheAll' } };
+    it('should reject f=preCacheAll without authentication', () => {
+      const e = { parameter: { f: 'preCacheAll' }, headers: {} };
       Code.doGet(e);
 
-      expect(global.UrlFetchApp.fetch).not.toHaveBeenCalled();
+      expect(global.CacheService.getScriptCache).not.toHaveBeenCalled();
+      expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(
+        JSON.stringify({ status: 401, error: 'missing id token' }),
+      );
+    });
+
+    it('should handle f=preCacheAll when authenticated', () => {
+      const e = { parameter: { f: 'preCacheAll' }, headers: { Authorization: 'Bearer token-value' } };
+      Code.doGet(e);
+
+      expect(global.UrlFetchApp.fetch).toHaveBeenCalled();
       expect(global.CacheService.getScriptCache).toHaveBeenCalled();
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
         status: true,
@@ -1270,16 +1287,12 @@ describe('Code.js', () => {
       expect(lastJson()).toEqual({ status: 401, error: 'session expired or invalid' });
     });
 
-    it('keeps the previous owner session valid when a new one is exchanged', () => {
+    it('revokes the previous owner session when a new one is exchanged', () => {
       const first = exchange();
       const second = exchange();
       expect(first).not.toBe(second);
-      const records = ownerRecords();
-      expect(records).toHaveLength(2);
-      expect(records[0].revoked_at).toBe('');
-      expect(records[1].revoked_at).toBe('');
       Code.doGet({ parameter: { session_token: first } });
-      expect(lastJson().assetClassRatio).toEqual([{ other: 'val', amount_yen: '20' }]);
+      expect(lastJson()).toEqual({ status: 401, error: 'session expired or invalid' });
       Code.doGet({ parameter: { session_token: second } });
       expect(lastJson().assetClassRatio).toEqual([{ other: 'val', amount_yen: '20' }]);
     });
