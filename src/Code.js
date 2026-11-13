@@ -97,12 +97,14 @@ const revokeActiveSessions_ = (records, nowIso) => {
 
 const revokeActiveShareSessions_ = revokeActiveSessions_;
 
-const issueSession_ = (fileName, tokenKey) => {
+const issueSession_ = (fileName, tokenKey, { revokePrevious = true } = {}) => {
   const now = new Date();
   const nowIso = now.toISOString();
   const expiresIso = new Date(now.getTime() + SHARE_TTL_SECONDS * 1000).toISOString();
   const records = readSessionRecords_(fileName);
-  revokeActiveSessions_(records, nowIso);
+  if (revokePrevious) {
+    revokeActiveSessions_(records, nowIso);
+  }
   const token = (Utilities.getUuid() + Utilities.getUuid()).replace(/-/g, '');
   records.push({
     token_hash: hashShareToken_(token),
@@ -163,12 +165,14 @@ const validateShareToken_ = token => validateSessionToken_(SHARE_FILE_NAME, toke
 // owner back at the sign-in gate. After a Google sign-in the frontend
 // exchanges the ID token for one of these 30-day owner sessions (same
 // storage scheme as share sessions, separate file) and uses it for all
-// later calls. Issuing a new one revokes the previous ones, and the
-// frontend revokes its session on logout.
+// later calls. Owner sessions coexist across devices: issuing a new
+// one does not revoke the previous ones, and the frontend revokes its
+// own session on logout.
 
 const OWNER_FILE_NAME = 'asset-owner-sessions.json';
 
-const issueOwnerSession_ = () => issueSession_(OWNER_FILE_NAME, 'session_token');
+const issueOwnerSession_ = () =>
+  issueSession_(OWNER_FILE_NAME, 'session_token', { revokePrevious: false });
 
 const validateOwnerToken_ = token => validateSessionToken_(OWNER_FILE_NAME, token);
 
