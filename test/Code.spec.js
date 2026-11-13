@@ -1287,12 +1287,16 @@ describe('Code.js', () => {
       expect(lastJson()).toEqual({ status: 401, error: 'session expired or invalid' });
     });
 
-    it('revokes the previous owner session when a new one is exchanged', () => {
+    it('keeps the previous owner session valid when a new one is exchanged', () => {
       const first = exchange();
       const second = exchange();
       expect(first).not.toBe(second);
+      const records = ownerRecords();
+      expect(records).toHaveLength(2);
+      expect(records[0].revoked_at).toBe('');
+      expect(records[1].revoked_at).toBe('');
       Code.doGet({ parameter: { session_token: first } });
-      expect(lastJson()).toEqual({ status: 401, error: 'session expired or invalid' });
+      expect(lastJson().assetClassRatio).toEqual([{ other: 'val', amount_yen: '20' }]);
       Code.doGet({ parameter: { session_token: second } });
       expect(lastJson().assetClassRatio).toEqual([{ other: 'val', amount_yen: '20' }]);
     });
