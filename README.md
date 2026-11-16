@@ -816,3 +816,72 @@ data by setting script properties on the staging project:
   (the owner's account and the shared OAuth client).
 
 The staging project has no triggers; it only serves requests.
+
+## 18. Dashboard RSS
+
+### 18.1 Purpose
+
+The /asset top page (dashboard) is also published as an RSS 2.0
+feed so it can be read in /reader, mirroring the /social
+performance highlights feed (`action=perf_rss` in social-gas).
+
+- Endpoint: `GET /exec?action=dashboard_rss&token=<redacted>
+- One item per day, for the 06:20 (Asia/Tokyo) delivery slot:
+  a request at or after 06:20 JST returns today's item; before
+  06:20 it returns yesterday's (today's is not generated yet).
+  /reader polls hourly, so the item is picked up the same
+  morning.
+- The item is computed on the fly from the same payload the
+  JSON API serves (the aggregated cache when warm, live Drive
+  reads otherwise). Nothing is stored for the feed.
+- Title: `M月D日 資産ダッシュボード`. The guid is
+  `asset-dashboard-YYYY-MM-DD` (the slot's JST date), stable
+  across fetches, so re-fetching never duplicates an item.
+  pubDate is the slot instant (06:20 JST).
+- The description follows the highlights format: a compact
+  summary (about 110 characters), a `-------` separator, then
+  the full detail lines, ending with the /asset link.
+
+### 18.2 Contents
+
+All five home blocks, with the same values and wording as the
+screen. The builders in `src/Code.js` (the `dashboard*`
+functions) are ports of the front end's home view models
+(`freddiefujiwara/asset`: `domain/home/*`, `domain/cashFlow/review`,
+`domain/progress`) and of its FIRE engine (`domain/fire/*`,
+including the pension model and the default simulator
+assumptions assembled by `useFireBaseParams`), verified to
+produce identical figures for identical inputs.
+
+1. Headline: net assets versus the previous snapshot month
+   (amount and %), plus the pace read from the full-FIRE
+   projection delta.
+2. Asset movement: the risk assets' day-over-day change
+   (amount and %) and the top-3 contributing holdings, using
+   only the same-day move columns of the holdings rows (never
+   the cumulative 評価損益), with the coverage note when only
+   some rows carry a move.
+3. Attention items (at most 3, priority order): stale import,
+   last month's investment below the owner's standard, living
+   categories more than 10% above their 12-month average
+   (each with its top-3 expenses of the month), living cost
+   overall, and a large special expense.
+4. The last 3 days of spending, ending at the newest
+   cash-flow date, grouped by day with daily totals (the
+   screen's exclusion rules: transfers, income and
+   double-counted rows are out; special expenses are in).
+5. Full-FIRE progress: progress rate, required assets, gap,
+   and the projected reach month with its month-over-month
+   delta from the snapshot trend.
+
+### 18.3 Token gate
+
+The items carry real amounts, so the feed is token-gated by
+the `DASHBOARD_RSS_TOKEN` script property and fails closed:
+while the property is unset, or the token mismatches, every
+request returns `{ ok: false, status: 403, error: 'invalid token' }`.
+The action sits outside the session / ID-token auth in
+`doGet`. The token must be set on each project (staging and
+production) as a script property; /reader's feeds sheet holds
+the matching tokenized URL. The token value itself is never
+written to this repository.
