@@ -1330,4 +1330,154 @@ describe('Code.js', () => {
       expect(global.DriveApp.getFolderById).toHaveBeenCalledWith('staging-folder-id');
     });
   });
+
+  describe('dashboard RSS', () => {
+    const monthKeyOf = (date) =>
+      `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
+    const shiftMonthKey = (monthKey, delta) => {
+      const [year, month] = monthKey.split('-').map(Number);
+      return monthKeyOf(new Date(year, month - 1 + delta, 1));
+    };
+    const nowDate = new Date();
+    const currentMonth = monthKeyOf(nowDate);
+    const lastMonth = shiftMonthKey(currentMonth, -1);
+    const todayKey = `${currentMonth}-${String(nowDate.getDate()).padStart(2, '0')}`;
+
+    const buildFixturePortfolio = () => {
+      const cashFlow = [];
+      for (let i = 1; i <= 12; i++) {
+        cashFlow.push({
+          date: `${shiftMonthKey(currentMonth, -i)}-05`,
+          amount: -100000,
+          name: 'スーパー',
+          category: '食費/食料品',
+          isTransfer: false,
+        });
+      }
+      // Last month: a clothing/beauty spike (its 12-month
+      // average is near zero, so it must be flagged), the full
+      // investment standard, and a recent expense.
+      cashFlow.push(
+        { date: `${lastMonth}-10`, amount: -30000, name: '美容院', category: '衣服・美容/美容院・理髪', isTransfer: false },
+        { date: `${lastMonth}-11`, amount: -20000, name: '化粧品', category: '衣服・美容/その他', isTransfer: false },
+        { date: `${lastMonth}-26`, amount: -23000, name: 'コクミンネンキンキキンレンゴウカイ(カクテイキヨシユツネンキン)', category: '', isTransfer: true },
+        { date: `${lastMonth}-24`, amount: -300000, name: 'ラクテンショウケンカブシキガイシャ (投信積立代金)', category: '', isTransfer: true },
+        { date: todayKey, amount: -1500, name: 'コンビニ', category: '食費/食料品', isTransfer: false },
+      );
+      return {
+        totals: { assetsYen: 6500000, liabilitiesYen: 1000000, netWorthYen: 5500000 },
+        summary: { assetsByClass: [], liabilitiesByCategory: [] },
+        holdings: {
+          cashLike: [{ '名称': '銀行預金', '残高': '1000000' }],
+          stocks: [{ '銘柄名': 'テスト株', '評価額': '2000000', '前日比': '-20000' }],
+          funds: [{ '銘柄名': 'テスト投信', '評価額': '3000000', '前日比': '15000' }],
+          pensions: [{ '名称': '確定拠出年金', '現在価値': '500000', '評価損益率': '10' }],
+          points: [],
+          liabilitiesDetail: [],
+        },
+        cashFlow,
+        snapshots: [
+          {
+            month: shiftMonthKey(currentMonth, -2),
+            totalAssetsYen: 6000000,
+            totalLiabilitiesYen: 1000000,
+            netAssetsYen: 5000000,
+            cashYen: 1000000,
+            riskAssetsYen: 5000000,
+            livingCost12mAvgYen: 100000,
+            income12mAvgYen: 300000,
+          },
+          {
+            month: lastMonth,
+            totalAssetsYen: 6500000,
+            totalLiabilitiesYen: 1000000,
+            netAssetsYen: 5500000,
+            cashYen: 1000000,
+            riskAssetsYen: 5500000,
+            livingCost12mAvgYen: 100000,
+            income12mAvgYen: 300000,
+          },
+        ],
+      };
+    };
+
+    it('picks today\'s slot at or after 06:20 JST and yesterday\'s before it', () => {
+      expect(Code.dashboardRssSlot_(Date.parse('2026-11-17T06:20:00+09:00')).dateKey).toBe('2026-11-17');
+      expect(Code.dashboardRssSlot_(Date.parse('2026-11-17T06:19:59+09:00')).dateKey).toBe('2026-11-16');
+      expect(Code.dashboardRssSlot_(Date.parse('2026-11-17T23:59:00+09:00')).dateKey).toBe('2026-11-17');
+    });
+
+    it('normalizes the raw API payload like the front end', () => {
+      const portfolio = Code.dashboardNormalizePortfolio_({
+        breakdown: [{ category: '預金・現金', amount_yen: '1000000', percentage: '20' }],
+        'total-liability': [{ total_yen: '500000' }],
+        mfcf: [
+          { date: '2026-11-01', amount: -1000, currency: 'JPY', name: 'A', category: '食費/食料品', is_transfer: false },
+          { date: '2026-11-01', amount: -1000, currency: 'JPY', name: 'A', category: '食費/食料品', is_transfer: false },
+        ],
+        snapshots: [
+          { month: '2026-10', total_assets: '6000000', total_liabilities: '500000', net_assets: '5500000', cash: '1000000', risk_assets: '5000000', living_cost_12m_avg: '100000', income_12m_avg: '300000' },
+        ],
+      });
+      expect(portfolio.totals).toEqual({ assetsYen: 1000000, liabilitiesYen: 500000, netWorthYen: 500000 });
+      // The duplicate mfcf row is dropped, as on the front end.
+      expect(portfolio.cashFlow).toHaveLength(1);
+      expect(portfolio.snapshots[0].netAssetsYen).toBe(5500000);
+    });
+
+    it('builds an item carrying all five home blocks with the screen values', () => {
+      const item = Code.buildDashboardRssItem_(buildFixturePortfolio(), Date.now());
+      expect(item.title).toMatch(/^\d+月\d+日 資産ダッシュボード$/);
+      expect(item.guid).toMatch(/^asset-dashboard-\d{4}-\d{2}-\d{2}$/);
+
+      const text = item.descriptionText;
+      expect(text).toContain('【今月の結論】');
+      expect(text).toContain('純資産は ¥5,500,000');
+      expect(text).toContain('先月比 +¥500,000');
+      expect(text).toContain('【資産推移】');
+      expect(text).toContain('リスク資産は前日比 -¥5,000');
+      expect(text).toContain('テスト株');
+      expect(text).toContain('【要確認】');
+      expect(text).toContain('衣服・美容が12か月平均を大きく上回りました');
+      expect(text).toContain('美容院');
+      expect(text).toContain('生活費が12か月平均の+10%を超えました');
+      expect(text).toContain('【過去3日間の支出】');
+      expect(text).toContain('コンビニ');
+      expect(text).toContain('【FIRE進捗の要点（完全FIRE）】');
+      expect(text).toContain('到達率');
+      expect(text).toContain('詳しくは https://freddiefujiwara.com/asset/');
+    });
+
+    it('renders the item as RSS 2.0 with a stable guid and pubDate', () => {
+      const item = Code.buildDashboardRssItem_(buildFixturePortfolio(), Date.now());
+      const xml = Code.buildDashboardRss_([item]);
+      expect(xml).toContain('<rss version="2.0">');
+      expect(xml).toContain('<title>資産ダッシュボード</title>');
+      expect(xml).toContain(`<guid isPermaLink="false">${item.guid}</guid>`);
+      expect(xml).toContain(`<pubDate>${item.pubDate}</pubDate>`);
+      // 06:20 JST is 21:20 UTC of the previous day.
+      expect(item.pubDate).toContain('21:20:00 GMT');
+    });
+
+    it('refuses the feed while the token property is unset', () => {
+      Code.doGet({ parameter: { action: 'dashboard_rss', token: 'anything' } });
+      const payload = JSON.parse(global.ContentService.createTextOutput.mock.calls.at(-1)[0]);
+      expect(payload).toEqual({ ok: false, status: 403, error: 'invalid token' });
+    });
+
+    it('refuses the feed when the token mismatches', () => {
+      scriptProperties.DASHBOARD_RSS_TOKEN = 'expected-token';
+      Code.doGet({ parameter: { action: 'dashboard_rss', token: 'wrong-token' } });
+      const payload = JSON.parse(global.ContentService.createTextOutput.mock.calls.at(-1)[0]);
+      expect(payload).toEqual({ ok: false, status: 403, error: 'invalid token' });
+    });
+
+    it('serves RSS XML when the token matches', () => {
+      scriptProperties.DASHBOARD_RSS_TOKEN = 'expected-token';
+      Code.doGet({ parameter: { action: 'dashboard_rss', token: 'expected-token' } });
+      const xml = global.ContentService.createTextOutput.mock.calls.at(-1)[0];
+      expect(xml).toContain('<rss version="2.0">');
+      expect(xml).toContain('資産ダッシュボード');
+    });
+  });
 });
