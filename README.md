@@ -893,3 +893,24 @@ The action sits outside the session / ID-token auth in
 production) as a script property; /reader's feeds sheet holds
 the matching tokenized URL. The token value itself is never
 written to this repository.
+
+## 19. Cache warming endpoint
+
+- Endpoint: `GET /exec?action=warm_cache&token=<redacted>
+- Runs `preCacheAll()` and returns its result as JSON
+  (`{ status: true, cachedKeys: [...] }`), rebuilding the
+  aggregated cache from Drive.
+- The home server's data-refresh job (`playwright-mf.sh`,
+  daily 06:10) calls it right after exporting fresh data
+  files, so the first reader of the day never pays the
+  rebuild. The job holds no user session, so the endpoint
+  sits outside the session / ID-token auth in `doGet` —
+  unlike `f=preCacheAll`, which stays behind that auth.
+- It is token-gated by the `WARM_CACHE_TOKEN` script
+  property and fails closed, in the same style as the
+  dashboard RSS gate: while the property is unset, or the
+  token is missing or mismatches, every request returns
+  `{ ok: false, status: 403, error: 'invalid token' }`.
+  The token must be set on each project (staging and
+  production) as a script property; its value is never
+  written to this repository.
