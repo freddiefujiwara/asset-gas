@@ -914,3 +914,43 @@ written to this repository.
   The token must be set on each project (staging and
   production) as a script property; its value is never
   written to this repository.
+
+## 20. Region weights (look-through allocation)
+
+The front end's "effective regional allocation" pie splits
+index funds into region buckets instead of one opaque
+"global" block. The split ratios ("weights") are owned here:
+
+- The source of truth is `region-weights.csv` in the data
+  folder, with columns `weight_set,bucket,weight,effective_date`
+  (weight sets: `acwi`, `developed`, `emerging`; buckets:
+  `japan`, `us`, `developed_other`, `emerging`, `other`).
+- Every data payload gains a structured `weights` key
+  (reshaped from the CSV rows by `buildRegionWeights_`).
+  When the CSV is missing or unparsable, an embedded seed is
+  served instead, so the key is always present. The seed was
+  derived from the official MSCI ACWI and MSCI World
+  factsheets as of 2026-10-30 (ACWI: US 64.63%, Japan 5.08%;
+  emerging share 11.19% implied by the two factsheets).
+- `updateRegionWeights` (monthly batch) refreshes the CSV
+  from the iShares MSCI ACWI ETF holdings file, a public
+  proxy for the ACWI country composition. Countries are
+  bucketed by the MSCI market classification; the
+  `developed` set (World ex Japan) is derived from the same
+  data by dropping Japan and emerging markets and
+  renormalizing. The fetch is validated before anything is
+  written: the parsed country total must land within
+  95-105%, and each stored set is normalized to sum to
+  exactly 100. On any failure (the source is bot-protected
+  from some networks, so failures are expected) the current
+  CSV is kept untouched and the run reports
+  `{ updated: false, reason: ... }`.
+- One-time setup per project, from the Apps Script editor:
+  run `ensureRegionWeightsFile()` to create the CSV from the
+  seed, and `installRegionWeightsTrigger()` to install the
+  monthly trigger (2nd of each month, 07:00-08:00 JST).
+  Merges and CI deploys create neither the file nor the
+  trigger.
+- Because the aggregated cache stores the raw CSV rows, a
+  weights refresh becomes visible after the next cache
+  warm-up (`warm_cache`, daily) or cache TTL expiry.
