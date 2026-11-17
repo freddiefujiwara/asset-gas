@@ -457,6 +457,11 @@ describe('Code.js', () => {
       'total-liability': [{ other: 'val' }],
       details__portfolio_456: [{ other: 'val' }],
       mfcf: [],
+      weights: {
+        acwi: { japan: 5.08, us: 64.63, developed_other: 19.1, emerging: 11.19, other: 0, effective_date: '2026-10-30' },
+        developed: { japan: 0, us: 77.19, developed_other: 22.81, emerging: 0, other: 0, effective_date: '2026-10-30' },
+        emerging: { japan: 0, us: 0, developed_other: 0, emerging: 100, other: 0, effective_date: '2026-10-30' },
+      },
       no_cache: true,
     };
     it('should return all CSV data keyed by filename when no parameters are provided', () => {
@@ -501,6 +506,11 @@ describe('Code.js', () => {
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
         assetClassRatio: [{ cached: true }],
         mfcf: [{ date: '2024-01-01', amount: 100 }],
+        weights: {
+          acwi: { japan: 5.08, us: 64.63, developed_other: 19.1, emerging: 11.19, other: 0, effective_date: '2026-10-30' },
+          developed: { japan: 0, us: 77.19, developed_other: 22.81, emerging: 0, other: 0, effective_date: '2026-10-30' },
+          emerging: { japan: 0, us: 0, developed_other: 0, emerging: 100, other: 0, effective_date: '2026-10-30' },
+        },
         no_cache: false,
       }));
       expect(global.DriveApp.getFolderById).not.toHaveBeenCalled();
@@ -1590,6 +1600,221 @@ describe('Code.js', () => {
       expect(global.CacheService.getScriptCache).toHaveBeenCalled();
       const payload = JSON.parse(global.ContentService.createTextOutput.mock.calls.at(-1)[0]);
       expect(payload).toEqual({ status: true, cachedKeys: ['0', 'mfcf'] });
+    });
+  });
+
+  describe('region weights', () => {
+    const HOLDINGS_HEADER =
+      'Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Notional Value,Quantity,Price,Location,Exchange,Currency';
+    const holdingRow = (ticker, weight, location, assetClass = 'Equity', sector = 'Technology') =>
+      `${ticker},SAMPLE ${ticker},${sector},${assetClass},1000,${weight},0,10,100,${location},XNYS,USD`;
+    // Country weights summing to 95.42 (inside the 95-105 window).
+    const COUNTRY_ROWS = [
+      ['United States', 64.63], ['Japan', 5.08], ['United Kingdom', 3.12],
+      ['Canada', 3.06], ['France', 2.4], ['Germany', 2.3], ['Switzerland', 2.2],
+      ['Australia', 1.8], ['Netherlands', 1.1], ['Taiwan', 3.23], ['China', 2.9],
+      ['India', 2], ['South Korea', 1.6],
+    ];
+    const holdingsCsv = (rows = COUNTRY_ROWS) =>
+      [
+        'iShares MSCI ACWI ETF',
+        'Fund Holdings as of a date',
+        HOLDINGS_HEADER,
+        ...rows.map(([location, weight], i) => holdingRow(`T${i}`, weight, location)),
+      ].join('\n');
+
+    const createIterator = (files) => {
+      let index = 0;
+      return { hasNext: () => index < files.length, next: () => files[index++] };
+    };
+
+    const mockWeightsFolder = (initialFiles = []) => {
+      const files = [...initialFiles];
+      const created = [];
+      const folder = {
+        getFiles: vi.fn(() => createIterator(files)),
+        getFilesByName: vi.fn((name) => createIterator(files.filter((f) => f.getName() === name))),
+        createFile: vi.fn((name, content) => {
+          created.push({ name, content });
+          files.push({
+            getName: () => name,
+            getBlob: () => ({ getDataAsString: () => content }),
+            setContent: vi.fn(),
+          });
+          return files[files.length - 1];
+        }),
+      };
+      global.DriveApp.getFolderById.mockReturnValue(folder);
+      return { folder, files, created };
+    };
+
+    describe('parseRegionWeightsRows_', () => {
+      it('reshapes rows and fills missing buckets with 0', () => {
+        const sets = Code.parseRegionWeightsRows_([
+          { weight_set: 'acwi', bucket: 'us', weight: '64.63', effective_date: '2026-10-30' },
+          { weight_set: 'acwi', bucket: 'japan', weight: '5.08', effective_date: '2026-10-30' },
+        ]);
+        expect(sets.acwi.us).toBe(64.63);
+        expect(sets.acwi.japan).toBe(5.08);
+        expect(sets.acwi.emerging).toBe(0);
+        expect(sets.acwi.effective_date).toBe('2026-10-30');
+      });
+
+      it('ignores unknown sets, buckets and invalid weights', () => {
+        const sets = Code.parseRegionWeightsRows_([
+          { weight_set: 'nope', bucket: 'us', weight: '1', effective_date: '2026-10-30' },
+          { weight_set: 'acwi', bucket: 'moon', weight: '1', effective_date: '2026-10-30' },
+          { weight_set: 'acwi', bucket: 'us', weight: '-3', effective_date: '2026-10-30' },
+          { weight_set: 'acwi', bucket: 'us', weight: 'abc', effective_date: '2026-10-30' },
+        ]);
+        expect(sets).toBeNull();
+      });
+
+      it('returns null for non-array input', () => {
+        expect(Code.parseRegionWeightsRows_(null)).toBeNull();
+        expect(Code.parseRegionWeightsRows_([])).toBeNull();
+      });
+    });
+
+    describe('buildRegionWeights_', () => {
+      it('falls back to the seed when rows are unusable', () => {
+        const sets = Code.buildRegionWeights_(null);
+        expect(sets.acwi.us).toBe(64.63);
+        expect(sets.acwi.effective_date).toBe('2026-10-30');
+        expect(sets.developed.japan).toBe(0);
+        expect(sets.emerging.emerging).toBe(100);
+      });
+
+      it('prefers parsed rows over the seed', () => {
+        const sets = Code.buildRegionWeights_([
+          { weight_set: 'acwi', bucket: 'us', weight: '50', effective_date: '2026-11-02' },
+        ]);
+        expect(sets.acwi.us).toBe(50);
+        expect(sets.acwi.effective_date).toBe('2026-11-02');
+      });
+    });
+
+    describe('parseAcwiHoldingsCsv_', () => {
+      it('aggregates weights by location and excludes cash rows', () => {
+        const csv = [
+          'iShares MSCI ACWI ETF',
+          HOLDINGS_HEADER,
+          holdingRow('AAPL', 5.02, 'United States'),
+          holdingRow('MSFT', 4.5, 'United States'),
+          holdingRow('TSMC', 1.78, 'Taiwan'),
+          holdingRow('CASH', 0.24, 'United States', 'Cash', 'Cash and/or Derivatives'),
+        ].join('\n');
+        const weights = Code.parseAcwiHoldingsCsv_(csv);
+        expect(weights['United States']).toBeCloseTo(9.52, 5);
+        expect(weights.Taiwan).toBeCloseTo(1.78, 5);
+      });
+
+      it('returns null for a bot-check HTML page', () => {
+        expect(Code.parseAcwiHoldingsCsv_('<!DOCTYPE html><html>Location</html>')).toBeNull();
+      });
+
+      it('returns null when the holdings header is missing', () => {
+        expect(Code.parseAcwiHoldingsCsv_('a,b,c\n1,2,3')).toBeNull();
+        expect(Code.parseAcwiHoldingsCsv_(null)).toBeNull();
+      });
+    });
+
+    describe('aggregateRegionWeights_', () => {
+      it('builds acwi and developed sets that each sum to 100', () => {
+        const countryWeights = Object.fromEntries(COUNTRY_ROWS);
+        const sets = Code.aggregateRegionWeights_(countryWeights);
+        const sum = (set) => ['japan', 'us', 'developed_other', 'emerging', 'other']
+          .reduce((acc, bucket) => acc + set[bucket], 0);
+        expect(sum(sets.acwi)).toBeCloseTo(100, 5);
+        expect(sum(sets.developed)).toBeCloseTo(100, 5);
+        expect(sets.acwi.us).toBeCloseTo(67.7, 0);
+        expect(sets.acwi.emerging).toBeCloseTo(10.2, 0);
+        expect(sets.developed.japan).toBe(0);
+        expect(sets.developed.us).toBeGreaterThan(sets.acwi.us);
+        expect(sets.emerging.emerging).toBe(100);
+      });
+
+      it('returns null when the total is outside the 95-105 window', () => {
+        expect(Code.aggregateRegionWeights_({ 'United States': 40, Japan: 5 })).toBeNull();
+        expect(Code.aggregateRegionWeights_({ 'United States': 120 })).toBeNull();
+        expect(Code.aggregateRegionWeights_(null)).toBeNull();
+      });
+    });
+
+    describe('updateRegionWeights', () => {
+      it('keeps the current CSV when the source returns HTML', () => {
+        global.UrlFetchApp.fetch = vi.fn(() => ({
+          getResponseCode: () => 200,
+          getContentText: () => '<!DOCTYPE html><html>bot check</html>',
+        }));
+        const { created } = mockWeightsFolder();
+        const result = Code.updateRegionWeights();
+        expect(result.updated).toBe(false);
+        expect(created).toHaveLength(0);
+      });
+
+      it('keeps the current CSV when the fetch itself fails', () => {
+        global.UrlFetchApp.fetch = vi.fn(() => ({
+          getResponseCode: () => 503,
+          getContentText: () => '',
+        }));
+        const { created } = mockWeightsFolder();
+        expect(Code.updateRegionWeights().updated).toBe(false);
+        expect(created).toHaveLength(0);
+      });
+
+      it('rewrites region-weights.csv when the source parses and validates', () => {
+        global.UrlFetchApp.fetch = vi.fn(() => ({
+          getResponseCode: () => 200,
+          getContentText: () => holdingsCsv(),
+        }));
+        const { created } = mockWeightsFolder();
+        const result = Code.updateRegionWeights();
+        expect(result.updated).toBe(true);
+        expect(created).toHaveLength(1);
+        expect(created[0].name).toBe('region-weights.csv');
+        expect(created[0].content).toContain('acwi,us,');
+        expect(created[0].content).toContain(`acwi,japan,5.32,${result.effectiveDate}`);
+      });
+    });
+
+    describe('ensureRegionWeightsFile', () => {
+      it('creates the CSV from the seed when missing', () => {
+        const { created } = mockWeightsFolder();
+        const result = Code.ensureRegionWeightsFile();
+        expect(result.created).toBe(true);
+        expect(created[0].content).toContain('acwi,us,64.63,2026-10-30');
+        expect(created[0].content).toContain('developed,us,77.19,2026-10-30');
+      });
+
+      it('leaves an existing CSV untouched', () => {
+        const existing = {
+          getName: () => 'region-weights.csv',
+          getBlob: () => ({ getDataAsString: () => 'weight_set,bucket,weight,effective_date\n' }),
+          setContent: vi.fn(),
+        };
+        const { created } = mockWeightsFolder([existing]);
+        const result = Code.ensureRegionWeightsFile();
+        expect(result.created).toBe(false);
+        expect(created).toHaveLength(0);
+        expect(existing.setContent).not.toHaveBeenCalled();
+      });
+    });
+
+    describe('installRegionWeightsTrigger', () => {
+      it('installs a monthly trigger for updateRegionWeights', () => {
+        const create = vi.fn(() => ({ getUniqueId: () => 'trigger-1' }));
+        global.ScriptApp = {
+          getProjectTriggers: vi.fn(() => []),
+          deleteTrigger: vi.fn(),
+          newTrigger: vi.fn(() => ({
+            timeBased: () => ({ onMonthDay: () => ({ atHour: () => ({ create }) }) }),
+          })),
+        };
+        const result = Code.installRegionWeightsTrigger();
+        expect(result).toEqual({ installed: true, handler: 'updateRegionWeights', triggerId: 'trigger-1' });
+        expect(global.ScriptApp.newTrigger).toHaveBeenCalledWith('updateRegionWeights');
+      });
     });
   });
 });
