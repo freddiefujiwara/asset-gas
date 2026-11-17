@@ -872,7 +872,15 @@ produce identical figures for identical inputs.
    double-counted rows are out; special expenses are in).
 5. Full-FIRE progress: progress rate, required assets, gap,
    and the projected reach month with its month-over-month
-   delta from the snapshot trend.
+   delta from the snapshot trend. The section also carries the
+   two ¥100M asset goals (total assets and net assets): each
+   goal's progress rate and projected reach month, computed by
+   `dashboardBuildAssetGoals_` (a port of the front end's
+   `buildAssetGoals`) with the FIRE engine's accumulation
+   phase under the same assumptions. Net assets subtract a
+   liabilities projection that declines the mortgage portion
+   by the monthly payment (principal-only approximation;
+   other liabilities stay constant).
 
 ### 18.3 Token gate
 

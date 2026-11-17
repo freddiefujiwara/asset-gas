@@ -2771,6 +2771,132 @@ export function dashboardBuildFireProgress_({
   };
 }
 
+// --- Asset goals (port of buildAssetGoals /
+// projectAssetGoals / projectLiabilitiesYen in
+// domain/progress): progress toward ¥100M in total assets
+// and in net assets. The projection reuses the FIRE engine's
+// accumulation phase (retirement forced to age 100, i.e. the
+// user keeps working) under the same assumptions as the
+// front end, and finds the first month each balance crosses
+// the goal. Liabilities are approximated: the mortgage
+// portion (monthly payment × months until payoff, capped at
+// the current balance) declines by the payment each month
+// (principal-only approximation; interest is not separated),
+// and other liabilities stay constant.
+
+const DASHBOARD_ASSET_GOAL_YEN = 100000000;
+
+export function dashboardProjectLiabilitiesYen_({
+  currentLiabilitiesYen,
+  mortgageMonthlyPayment,
+  mortgagePayoffDate,
+  startMonthKey,
+  monthOffset,
+}) {
+  const total = Math.max(0, Number(currentLiabilitiesYen ?? 0));
+  const payment = Math.max(0, Number(mortgageMonthlyPayment ?? 0));
+  if (
+    !payment ||
+    !mortgagePayoffDate ||
+    !dashboardParseMonthKey_(mortgagePayoffDate) ||
+    !dashboardParseMonthKey_(startMonthKey)
+  ) {
+    return total;
+  }
+  const remainingMonths = Math.max(
+    0,
+    dashboardMonthKeyToIndex_(mortgagePayoffDate) - dashboardMonthKeyToIndex_(startMonthKey) + 1,
+  );
+  const mortgageBalance = Math.min(total, payment * remainingMonths);
+  const otherLiabilities = total - mortgageBalance;
+  return otherLiabilities + Math.max(0, mortgageBalance - payment * monthOffset);
+}
+
+const dashboardProjectAssetGoals_ = ({
+  totalAssetsYen,
+  liabilitiesYen,
+  riskAssetsYen,
+  params,
+  startMonthKey,
+}) => {
+  const goalYen = DASHBOARD_ASSET_GOAL_YEN;
+  const totalMonths = (100 - Number(params.currentAge || 40)) * 12;
+  const { monthlyData } = dashboardPerformFireSimulation_(
+    { ...params, initialAssets: totalAssetsYen, riskAssets: riskAssetsYen },
+    { forceFireMonth: totalMonths, recordMonthly: true },
+  );
+  const series = monthlyData.map((row) => {
+    const liabilities = dashboardProjectLiabilitiesYen_({
+      currentLiabilitiesYen: liabilitiesYen,
+      mortgageMonthlyPayment: params.mortgageMonthlyPayment,
+      mortgagePayoffDate: params.mortgagePayoffDate,
+      startMonthKey,
+      monthOffset: row.month,
+    });
+    return {
+      monthOffset: row.month,
+      monthKey: dashboardAddMonthsToMonthKey_(startMonthKey, row.month),
+      totalAssetsYen: Math.round(row.assets),
+      liabilitiesYen: Math.round(liabilities),
+      netAssetsYen: Math.round(row.assets - liabilities),
+    };
+  });
+
+  const summarize = (currentYen, pick) => {
+    const reachedIndex = series.findIndex((row) => pick(row) >= goalYen);
+    if (currentYen >= goalYen) {
+      return {
+        reached: true,
+        alreadyReached: true,
+        monthsToReach: 0,
+        projectedMonth: startMonthKey,
+        progressRate: currentYen / goalYen,
+      };
+    }
+    if (reachedIndex < 0) {
+      return {
+        reached: false,
+        alreadyReached: false,
+        monthsToReach: null,
+        projectedMonth: null,
+        progressRate: currentYen / goalYen,
+      };
+    }
+    return {
+      reached: true,
+      alreadyReached: false,
+      monthsToReach: reachedIndex,
+      projectedMonth: series[reachedIndex].monthKey,
+      progressRate: currentYen / goalYen,
+    };
+  };
+
+  const netAssetsYen = totalAssetsYen - liabilitiesYen;
+  return {
+    goalYen,
+    totalAssetsYen,
+    liabilitiesYen,
+    netAssetsYen,
+    total: summarize(totalAssetsYen, (row) => row.totalAssetsYen),
+    net: summarize(netAssetsYen, (row) => row.netAssetsYen),
+    series,
+  };
+};
+
+export function dashboardBuildAssetGoals_({ portfolio, baseParams, startMonthKey }) {
+  const totalAssetsYen = Number(portfolio?.totals?.assetsYen ?? 0);
+  const liabilitiesYen = Number(portfolio?.totals?.liabilitiesYen ?? 0);
+  const firePortfolio = dashboardCalculateFirePortfolio_(portfolio);
+  const riskAssetsYen = Math.min(firePortfolio.riskAssetsYen, totalAssetsYen);
+  return dashboardProjectAssetGoals_({
+    totalAssetsYen,
+    liabilitiesYen,
+    riskAssetsYen,
+    params: { ...baseParams },
+    startMonthKey,
+  });
+}
+
 // Projection trend across snapshot months (port of
 // buildProjectionTrend): each snapshot month is re-run
 // through the engine with that month's assets and averages
@@ -2969,6 +3095,11 @@ export function buildDashboardRssItem_(portfolio, nowMs) {
   const recentExpenses = dashboardBuildRecentExpenses_(cashFlow);
 
   const fireProgress = dashboardBuildFireProgress_({ portfolio, baseParams });
+  const assetGoals = dashboardBuildAssetGoals_({
+    portfolio,
+    baseParams,
+    startMonthKey: currentMonthKey,
+  });
   const projectionTrend = dashboardBuildProjectionTrend_(snapshots, {
     baseParams,
     universityFundYen: DASHBOARD_UNIVERSITY_FUND_YEN,
@@ -3204,6 +3335,31 @@ export function buildDashboardRssItem_(portfolio, nowMs) {
     }
   }
   lines.push(fireLine);
+
+  const goalLine = (label, goal) => {
+    const rate = goal.progressRate != null ? (goal.progressRate * 100).toFixed(1) + '%' : '—';
+    if (goal.alreadyReached) {
+      return label + '：達成度 ' + rate + '・達成済みです。';
+    }
+    if (goal.reached) {
+      const [year, month] = goal.projectedMonth.split('-').map(Number);
+      return (
+        label +
+        '：達成度 ' +
+        rate +
+        '・達成見込みは ' +
+        year +
+        '年' +
+        month +
+        '月（あと' +
+        dashboardFormatMonths_(goal.monthsToReach) +
+        '）です。'
+      );
+    }
+    return label + '：達成度 ' + rate + '・現在の前提では見込みが立ちません。';
+  };
+  lines.push(goalLine('金融資産1億円', assetGoals.total));
+  lines.push(goalLine('純金融資産1億円', assetGoals.net));
 
   const dateParts = slot.dateKey.split('-');
   return {

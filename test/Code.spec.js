@@ -1448,6 +1448,85 @@ describe('Code.js', () => {
       expect(text).toContain('詳しくは https://freddiefujiwara.com/asset/');
     });
 
+    it('includes the two 100M asset goals in the FIRE section', () => {
+      const item = Code.buildDashboardRssItem_(buildFixturePortfolio(), Date.now());
+      const text = item.descriptionText;
+      expect(text).toContain('金融資産1億円：達成度 6.5%');
+      expect(text).toContain('純金融資産1億円：達成度 5.5%');
+    });
+
+    it('projects liabilities with the principal-only mortgage approximation', () => {
+      const base = {
+        currentLiabilitiesYen: 11510887,
+        mortgageMonthlyPayment: 61089,
+        mortgagePayoffDate: '2042-05',
+        startMonthKey: '2026-11',
+        monthOffset: 0,
+      };
+      expect(Code.dashboardProjectLiabilitiesYen_(base)).toBe(11510887);
+      expect(Code.dashboardProjectLiabilitiesYen_({ ...base, monthOffset: 10 })).toBe(11510887 - 610890);
+      expect(Code.dashboardProjectLiabilitiesYen_({ ...base, monthOffset: 500 })).toBe(87244);
+      expect(Code.dashboardProjectLiabilitiesYen_({ ...base, mortgageMonthlyPayment: 0 })).toBe(11510887);
+      expect(Code.dashboardProjectLiabilitiesYen_({ ...base, mortgagePayoffDate: null })).toBe(11510887);
+    });
+
+    it('matches the front end\u2019s asset-goal projection on the same fixture', () => {
+      // Same fixture and base params as the front end's
+      // domain/progress tests; the summaries must be identical.
+      const portfolio = {
+        totals: { assetsYen: 78139712, liabilitiesYen: 11510887, netWorthYen: 66628825 },
+        holdings: {
+          cashLike: [{ '名称': '銀行預金', '残高': 7502164 }],
+          stocks: [{ '名称': '株式A', '評価額': 17538769 }],
+          funds: [{ '名称': '投信A', '評価額': 49569663 }],
+          pensions: [{ '名称': '確定拠出年金', '現在価値': 3457712 }],
+          points: [],
+          liabilitiesDetail: [],
+        },
+      };
+      const baseParams = {
+        annualReturnRate: 0.05,
+        monthlyExpense: 483688,
+        monthlyIncome: 1071000,
+        currentAge: 47,
+        includeInflation: true,
+        inflationRate: 0.02,
+        includeTax: true,
+        taxRate: 0.20315,
+        withdrawalRate: 0.04,
+        mortgageMonthlyPayment: 61089,
+        mortgagePayoffDate: '2042-05',
+        postFireExtraExpense: 60000,
+        postFireFirstYearExtraExpense: 1930000,
+        retirementLumpSumAtFire: 5000000,
+        includePension: true,
+        monthlyInvestment: 423000,
+        expenseBreakdown: null,
+      };
+      const goals = Code.dashboardBuildAssetGoals_({ portfolio, baseParams, startMonthKey: '2026-11' });
+      expect(goals.total).toEqual({
+        reached: true,
+        alreadyReached: false,
+        monthsToReach: 25,
+        projectedMonth: '2028-12',
+        progressRate: 0.78139712,
+      });
+      expect(goals.net).toEqual({
+        reached: true,
+        alreadyReached: false,
+        monthsToReach: 35,
+        projectedMonth: '2029-10',
+        progressRate: 0.66628825,
+      });
+      expect(goals.series[0]).toEqual({
+        monthOffset: 0,
+        monthKey: '2026-11',
+        totalAssetsYen: 78139712,
+        liabilitiesYen: 11510887,
+        netAssetsYen: 66628825,
+      });
+    });
+
     it('renders the item as RSS 2.0 with a stable guid and pubDate', () => {
       const item = Code.buildDashboardRssItem_(buildFixturePortfolio(), Date.now());
       const xml = Code.buildDashboardRss_([item]);
