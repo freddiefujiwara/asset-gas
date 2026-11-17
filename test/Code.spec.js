@@ -1559,4 +1559,37 @@ describe('Code.js', () => {
       expect(xml).toContain('資産ダッシュボード');
     });
   });
+
+  describe('warm_cache endpoint', () => {
+    it('refuses while the token property is unset', () => {
+      Code.doGet({ parameter: { action: 'warm_cache', token: 'anything' } });
+      const payload = JSON.parse(global.ContentService.createTextOutput.mock.calls.at(-1)[0]);
+      expect(payload).toEqual({ ok: false, status: 403, error: 'invalid token' });
+      expect(global.CacheService.getScriptCache).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the token is missing', () => {
+      scriptProperties.WARM_CACHE_TOKEN = 'expected-token';
+      Code.doGet({ parameter: { action: 'warm_cache' } });
+      const payload = JSON.parse(global.ContentService.createTextOutput.mock.calls.at(-1)[0]);
+      expect(payload).toEqual({ ok: false, status: 403, error: 'invalid token' });
+      expect(global.CacheService.getScriptCache).not.toHaveBeenCalled();
+    });
+
+    it('refuses when the token mismatches', () => {
+      scriptProperties.WARM_CACHE_TOKEN = 'expected-token';
+      Code.doGet({ parameter: { action: 'warm_cache', token: 'wrong-token' } });
+      const payload = JSON.parse(global.ContentService.createTextOutput.mock.calls.at(-1)[0]);
+      expect(payload).toEqual({ ok: false, status: 403, error: 'invalid token' });
+      expect(global.CacheService.getScriptCache).not.toHaveBeenCalled();
+    });
+
+    it('runs preCacheAll and returns its result when the token matches', () => {
+      scriptProperties.WARM_CACHE_TOKEN = 'expected-token';
+      Code.doGet({ parameter: { action: 'warm_cache', token: 'expected-token' } });
+      expect(global.CacheService.getScriptCache).toHaveBeenCalled();
+      const payload = JSON.parse(global.ContentService.createTextOutput.mock.calls.at(-1)[0]);
+      expect(payload).toEqual({ status: true, cachedKeys: ['0', 'mfcf'] });
+    });
+  });
 });

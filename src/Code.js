@@ -548,6 +548,13 @@ export function doGet(e) {
       return serveDashboardRss_(parameters);
     }
 
+    // Cache warming for the data-refresh job has its own token
+    // gate too: the job runs outside any user session, so it
+    // cannot use the ID-token auth that guards f=preCacheAll.
+    if (action === 'warm_cache') {
+      return serveWarmCache_(parameters);
+    }
+
     if (action === 'exchange_session') {
       verifyGoogleIdTokenOrThrow_(extractIdToken_(e));
       return createJsonResponse_(JSON.stringify(issueOwnerSession_()));
@@ -1237,6 +1244,32 @@ function serveDashboardRss_(parameter) {
       }),
     );
   }
+}
+
+// --- Cache warming endpoint (action=warm_cache) ---
+// GET /exec?action=warm_cache&token=<redacted> rebuilds the
+// aggregated cache by running preCacheAll(). The data-refresh
+// job on the home server (playwright-mf.sh, daily 06:10) calls
+// it right after exporting fresh data files, so the first
+// reader of the day never pays the rebuild. The job holds no
+// user session, so — like the dashboard RSS — the endpoint
+// sits outside the session / ID-token auth and is gated by
+// its own script property, WARM_CACHE_TOKEN, failing closed.
+// (f=preCacheAll behind the ID-token auth is unchanged, and
+// preCacheAll stays callable from the editor and triggers.)
+
+const WARM_CACHE_TOKEN_PROPERTY = 'WARM_CACHE_TOKEN';
+
+// Serves action=warm_cache. The token check comes first and
+// fails closed: an unset WARM_CACHE_TOKEN refuses every
+// request. On success it returns preCacheAll()'s result
+// ({ status: true, cachedKeys: [...] }) as JSON.
+function serveWarmCache_(parameter) {
+  const expected = getScriptProperty_(WARM_CACHE_TOKEN_PROPERTY);
+  if (!expected || !parameter.token || parameter.token !== expected) {
+    return createJsonResponse_(JSON.stringify({ ok: false, status: 403, error: 'invalid token' }));
+  }
+  return createJsonResponse_(JSON.stringify(preCacheAll()));
 }
 
 // --- Formatting / parsing helpers (ports of the front end's
