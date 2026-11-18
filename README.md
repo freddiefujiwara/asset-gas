@@ -923,7 +923,8 @@ index funds into region buckets instead of one opaque
 
 - The source of truth is `region-weights.csv` in the data
   folder, with columns `weight_set,bucket,weight,effective_date`
-  (weight sets: `acwi`, `developed`, `emerging`; buckets:
+  (weight sets: `acwi`, `acwi_ex_japan`, `developed`,
+  `emerging`; buckets:
   `japan`, `us`, `developed_other`, `emerging`, `other`).
 - Every data payload gains a structured `weights` key
   (reshaped from the CSV rows by `buildRegionWeights_`).
@@ -944,7 +945,9 @@ index funds into region buckets instead of one opaque
   weights (World is developed only), the emerging share is
   the remainder, and the `developed` set drops Japan and the
   emerging share from the ACWI set and renormalizes the rest
-  to 100. PDF text is extracted through the Drive
+  to 100. The `acwi_ex_japan` set (for all-country funds that
+  exclude Japan) drops only Japan from the ACWI set and
+  renormalizes the rest to 100. PDF text is extracted through the Drive
   conversion (upload with a Google Docs target mime type via
   the Drive REST API, export as text, trash the temporary
   file). Everything is validated before anything is
