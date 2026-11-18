@@ -47,14 +47,14 @@ const SHARE_FILE_NAME = 'asset-share-sessions.json';
 // One month, so the owner can hand out a link well before it is needed.
 const SHARE_TTL_SECONDS = 30 * 24 * 60 * 60;
 
-const findSessionFile_ = fileName => {
+const findDataFile_ = fileName => {
   const folder = DriveApp.getFolderById(dataFolderId_());
   const files = folder.getFilesByName(fileName);
   return files.hasNext() ? files.next() : null;
 };
 
 const readSessionRecords_ = fileName => {
-  const file = findSessionFile_(fileName);
+  const file = findDataFile_(fileName);
   if (!file) {
     return [];
   }
@@ -69,17 +69,13 @@ const readSessionRecords_ = fileName => {
 
 const writeSessionRecords_ = (fileName, records) => {
   const content = JSON.stringify(records);
-  const file = findSessionFile_(fileName);
+  const file = findDataFile_(fileName);
   if (file) {
     file.setContent(content);
     return;
   }
   DriveApp.getFolderById(dataFolderId_()).createFile(fileName, content, 'application/json');
 };
-
-const readShareRecords_ = () => readSessionRecords_(SHARE_FILE_NAME);
-
-const writeShareRecords_ = records => writeSessionRecords_(SHARE_FILE_NAME, records);
 
 const hashShareToken_ = token =>
   Utilities.computeDigest(Utilities.DigestAlgorithm.SHA_256, String(token))
@@ -94,8 +90,6 @@ const revokeActiveSessions_ = (records, nowIso) => {
     }
   });
 };
-
-const revokeActiveShareSessions_ = revokeActiveSessions_;
 
 const issueSession_ = (fileName, tokenKey, { revokePrevious = true } = {}) => {
   const now = new Date();
@@ -126,9 +120,9 @@ const issueSession_ = (fileName, tokenKey, { revokePrevious = true } = {}) => {
 const issueShareSession_ = () => issueSession_(SHARE_FILE_NAME, 'share_token');
 
 const revokeShareSession_ = () => {
-  const records = readShareRecords_();
-  revokeActiveShareSessions_(records, new Date().toISOString());
-  writeShareRecords_(records);
+  const records = readSessionRecords_(SHARE_FILE_NAME);
+  revokeActiveSessions_(records, new Date().toISOString());
+  writeSessionRecords_(SHARE_FILE_NAME, records);
   return { revoked: true };
 };
 
@@ -244,7 +238,8 @@ const isSnapshotRiskCategory_ = (category) =>
 // Expense classification keywords. These mirror the client-side rules
 // in freddiefujiwara/asset (src/domain/cashFlow/classifiers.js and
 // constants.js) so the averages recorded here match the figures the
-// cash-flow screen displays.
+// cash-flow screen displays. The dashboard RSS builders further
+// below classify with the same two lists.
 const SNAPSHOT_FIXED_CATEGORY_KEYWORDS = [
   '住宅/ローン返済',
   '住宅/管理費',
@@ -288,13 +283,9 @@ export function classifySnapshotExpenseType_(item) {
 }
 
 const snapshotMonthWindow_ = (monthKey) => {
-  const [year, month] = String(monthKey).split('-').map((part) => parseInt(part, 10));
   const months = [];
   for (let offset = 11; offset >= 0; offset -= 1) {
-    const date = new Date(Date.UTC(year, month - 1 - offset, 1));
-    const y = date.getUTCFullYear();
-    const m = String(date.getUTCMonth() + 1).padStart(2, '0');
-    months.push(`${y}-${m}`);
+    months.push(dashboardAddMonthsToMonthKey_(monthKey, -offset));
   }
   return months;
 };
@@ -391,12 +382,6 @@ export function computeSnapshotRow_(allData, mfcfEntries, monthKey) {
   };
 }
 
-const findSnapshotFile_ = () => {
-  const folder = DriveApp.getFolderById(dataFolderId_());
-  const files = folder.getFilesByName(SNAPSHOT_FILE_NAME);
-  return files.hasNext() ? files.next() : null;
-};
-
 const snapshotRowToCsvLine_ = (row) =>
   SNAPSHOT_HEADERS.map((header) => String(row[header] ?? '')).join(',');
 
@@ -405,7 +390,7 @@ const snapshotRowToCsvLine_ = (row) =>
  * the same month when present. Data lines are kept sorted by month.
  */
 export function upsertSnapshotRow_(row) {
-  const file = findSnapshotFile_();
+  const file = findDataFile_(SNAPSHOT_FILE_NAME);
   const existingLines = file
     ? file.getBlob().getDataAsString('UTF-8').split('\n').filter((line) => line.trim() !== '')
     : [];
@@ -482,22 +467,30 @@ export function createMonthlySnapshot() {
  * triggers for the same handler are removed first.
  */
 export function installMonthlySnapshotTrigger() {
+  return installMonthlyTrigger_('createMonthlySnapshot', 1);
+}
+
+// Shared installer for the monthly time-driven triggers:
+// removes existing triggers for the handler, then installs a
+// fresh one on the given day of month at 07:00-08:00 (project
+// time zone).
+const installMonthlyTrigger_ = (handler, monthDay) => {
   ScriptApp.getProjectTriggers()
-    .filter((trigger) => trigger.getHandlerFunction() === 'createMonthlySnapshot')
+    .filter((trigger) => trigger.getHandlerFunction() === handler)
     .forEach((trigger) => ScriptApp.deleteTrigger(trigger));
 
-  const trigger = ScriptApp.newTrigger('createMonthlySnapshot')
+  const trigger = ScriptApp.newTrigger(handler)
     .timeBased()
-    .onMonthDay(1)
+    .onMonthDay(monthDay)
     .atHour(7)
     .create();
 
   return {
     installed: true,
-    handler: 'createMonthlySnapshot',
+    handler,
     triggerId: trigger.getUniqueId(),
   };
-}
+};
 
 export function preCacheAll() {
   const cache = CacheService.getScriptCache();
@@ -735,19 +728,14 @@ function createJsonResponse_(jsonString) {
     .setMimeType(ContentService.MimeType.JSON);
 }
 
-function getCsvFilesIterator_() {
-  const folder = DriveApp.getFolderById(dataFolderId_());
-  logDebug_(`CSV scan start. folderId=${dataFolderId_()}`);
-  return folder.getFiles();
-}
-
 function getAllCsvDataInFolder_() {
   const allEntries = getAllCsvDataEntries_();
   return entriesToObject_(allEntries);
 }
 
 function getAllCsvDataEntries_() {
-  const files = getCsvFilesIterator_();
+  logDebug_(`CSV scan start. folderId=${dataFolderId_()}`);
+  const files = DriveApp.getFolderById(dataFolderId_()).getFiles();
   const entries = [];
   let scannedCount = 0;
   let csvFileCount = 0;
@@ -763,7 +751,7 @@ function getAllCsvDataEntries_() {
     }
 
     csvFileCount += 1;
-    const typeName = removeCsvExtension_(fileName);
+    const typeName = fileName.replace(/\.csv$/i, '');
     const csvContent = file.getBlob().getDataAsString('UTF-8');
     const parsedRows = parseCsv_(csvContent);
     logDebug_(`CSV read. file=${fileName} type=${typeName} bytes=${csvContent.length} rows=${parsedRows.length}`);
@@ -783,10 +771,6 @@ function entriesToObject_(entries) {
     acc[entry.typeName] = entry.data;
     return acc;
   }, {});
-}
-
-function removeCsvExtension_(fileName) {
-  return fileName.replace(/\.csv$/i, '');
 }
 
 /**
@@ -1150,12 +1134,16 @@ const DASHBOARD_RSS_JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 // clamp the summary to three lines.
 const DASHBOARD_RSS_SUMMARY_CHARS = 110;
 
+// YYYY-MM-DD of a Date, read in UTC.
+const dashboardUtcDateKey_ = (date) => {
+  const month = String(date.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(date.getUTCDate()).padStart(2, '0');
+  return date.getUTCFullYear() + '-' + month + '-' + day;
+};
+
 // The JST calendar date (YYYY-MM-DD) containing the instant.
 function dashboardRssJstDateKey_(ms) {
-  const shifted = new Date(ms + DASHBOARD_RSS_JST_OFFSET_MS);
-  const month = String(shifted.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(shifted.getUTCDate()).padStart(2, '0');
-  return shifted.getUTCFullYear() + '-' + month + '-' + day;
+  return dashboardUtcDateKey_(new Date(ms + DASHBOARD_RSS_JST_OFFSET_MS));
 }
 
 // The current delivery slot: today's 06:20 JST once it has
@@ -1176,6 +1164,15 @@ export function dashboardRssSlot_(nowMs) {
   };
 }
 
+// Token gate for the endpoints that sit outside the session /
+// ID-token auth (dashboard RSS, cache warming): the request
+// must carry the token stored in the given script property,
+// and an unset property refuses every request (fails closed).
+const hasValidToken_ = (parameter, property) => {
+  const expected = getScriptProperty_(property);
+  return Boolean(expected) && Boolean(parameter?.token) && parameter.token === expected;
+};
+
 function escapeDashboardXmlText_(value) {
   return String(value === null || value === undefined ? '' : value)
     .replace(/&/g, '&amp;')
@@ -1183,10 +1180,6 @@ function escapeDashboardXmlText_(value) {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
-}
-
-function createDashboardXmlResponse_(xml) {
-  return ContentService.createTextOutput(xml).setMimeType(ContentService.MimeType.XML);
 }
 
 // Builds the RSS 2.0 document from dashboard items (at most
@@ -1219,13 +1212,11 @@ export function buildDashboardRss_(items) {
   return lines.join('\n');
 }
 
-// Serves action=dashboard_rss. The token check comes first and
-// fails closed: an unset DASHBOARD_RSS_TOKEN refuses every
-// request. The data is the same payload the JSON API serves
+// Serves action=dashboard_rss (token gate: hasValidToken_).
+// The data is the same payload the JSON API serves
 // (the aggregated cache when warm, live Drive reads otherwise).
 function serveDashboardRss_(parameter) {
-  const expected = getScriptProperty_(DASHBOARD_RSS_TOKEN_PROPERTY);
-  if (!expected || !parameter.token || parameter.token !== expected) {
+  if (!hasValidToken_(parameter, DASHBOARD_RSS_TOKEN_PROPERTY)) {
     return createJsonResponse_(JSON.stringify({ ok: false, status: 403, error: 'invalid token' }));
   }
   try {
@@ -1235,7 +1226,8 @@ function serveDashboardRss_(parameter) {
       : attachMfcfEntries_(getAllCsvDataInFolder_(), getAllXmlDataEntries_());
     const portfolio = dashboardNormalizePortfolio_(allData);
     const item = buildDashboardRssItem_(portfolio, Date.now());
-    return createDashboardXmlResponse_(buildDashboardRss_(item ? [item] : []));
+    return ContentService.createTextOutput(buildDashboardRss_(item ? [item] : []))
+      .setMimeType(ContentService.MimeType.XML);
   } catch (err) {
     return createJsonResponse_(
       JSON.stringify({
@@ -1261,13 +1253,11 @@ function serveDashboardRss_(parameter) {
 
 const WARM_CACHE_TOKEN_PROPERTY = 'WARM_CACHE_TOKEN';
 
-// Serves action=warm_cache. The token check comes first and
-// fails closed: an unset WARM_CACHE_TOKEN refuses every
-// request. On success it returns preCacheAll()'s result
+// Serves action=warm_cache (token gate: hasValidToken_).
+// On success it returns preCacheAll()'s result
 // ({ status: true, cachedKeys: [...] }) as JSON.
 function serveWarmCache_(parameter) {
-  const expected = getScriptProperty_(WARM_CACHE_TOKEN_PROPERTY);
-  if (!expected || !parameter.token || parameter.token !== expected) {
+  if (!hasValidToken_(parameter, WARM_CACHE_TOKEN_PROPERTY)) {
     return createJsonResponse_(JSON.stringify({ ok: false, status: 403, error: 'invalid token' }));
   }
   return createJsonResponse_(JSON.stringify(preCacheAll()));
@@ -1415,15 +1405,9 @@ const regionWeightsCsvText_ = (rows) =>
     ...rows.map((row) => `${row.weight_set},${row.bucket},${row.weight},${row.effective_date}`),
   ].join('\n') + '\n';
 
-const findRegionWeightsFile_ = () => {
-  const folder = DriveApp.getFolderById(dataFolderId_());
-  const files = folder.getFilesByName(REGION_WEIGHTS_FILE_NAME);
-  return files.hasNext() ? files.next() : null;
-};
-
 const writeRegionWeightsCsv_ = (sets, effectiveDate) => {
   const content = regionWeightsCsvText_(regionWeightsRows_(sets, effectiveDate));
-  const file = findRegionWeightsFile_();
+  const file = findDataFile_(REGION_WEIGHTS_FILE_NAME);
   if (file) {
     file.setContent(content);
   } else {
@@ -1443,7 +1427,7 @@ const writeRegionWeightsCsv_ = (sets, effectiveDate) => {
  * Existing files are left untouched.
  */
 export function ensureRegionWeightsFile() {
-  if (findRegionWeightsFile_()) {
+  if (findDataFile_(REGION_WEIGHTS_FILE_NAME)) {
     return { created: false, reason: 'region-weights.csv already exists' };
   }
   writeRegionWeightsCsv_(regionWeightsSeedSets_(), REGION_WEIGHTS_SEED_DATE);
@@ -1724,7 +1708,7 @@ export function fetchFactsheetText_(url) {
 // (all sets share one date), or null when the file is missing
 // or unparsable.
 const currentRegionWeightsEffectiveDate_ = () => {
-  const file = findRegionWeightsFile_();
+  const file = findDataFile_(REGION_WEIGHTS_FILE_NAME);
   if (!file) {
     return null;
   }
@@ -1788,21 +1772,7 @@ export function updateRegionWeights() {
  * from the editor — merges and CI deploys do not create it.
  */
 export function installRegionWeightsTrigger() {
-  ScriptApp.getProjectTriggers()
-    .filter((trigger) => trigger.getHandlerFunction() === 'updateRegionWeights')
-    .forEach((trigger) => ScriptApp.deleteTrigger(trigger));
-
-  const trigger = ScriptApp.newTrigger('updateRegionWeights')
-    .timeBased()
-    .onMonthDay(2)
-    .atHour(7)
-    .create();
-
-  return {
-    installed: true,
-    handler: 'updateRegionWeights',
-    triggerId: trigger.getUniqueId(),
-  };
+  return installMonthlyTrigger_('updateRegionWeights', 2);
 }
 
 // --- Formatting / parsing helpers (ports of the front end's
@@ -1989,28 +1959,8 @@ export function dashboardNormalizePortfolio_(api) {
 }
 
 // --- Cash-flow classification (port of the front end's
-// cashFlow/classifiers + constants) ---
-
-const DASHBOARD_CASH_FLOW_FIXED_KEYWORDS = [
-  '住宅/ローン返済',
-  '住宅/管理費',
-  '水道・光熱費',
-  '教養・教育/学費',
-  '保険/',
-  '通信費/',
-  '健康・医療/',
-  '食費/食費',
-  '食費/食料品',
-  '日用品/',
-  '衣服・美容/美容院・理髪',
-];
-const DASHBOARD_CASH_FLOW_EXCLUDE_KEYWORDS = [
-  'カード引き落とし',
-  'ATM引き出し',
-  '電子マネー',
-  '使途不明金',
-  '収入/',
-];
+// cashFlow/classifiers + constants; the keyword lists are the
+// SNAPSHOT_*_CATEGORY_KEYWORDS defined with the snapshot code) ---
 
 // 'fixed' | 'variable' | 'exclude', as the front end's
 // getExpenseType.
@@ -2024,8 +1974,8 @@ const dashboardGetExpenseType_ = (categoryOrItem) => {
   if (category.startsWith('特別な支出')) return 'exclude';
   if (category.startsWith('現金')) return 'exclude';
   if (category.startsWith('カード')) return 'exclude';
-  if (DASHBOARD_CASH_FLOW_EXCLUDE_KEYWORDS.some((k) => category.includes(k))) return 'exclude';
-  if (DASHBOARD_CASH_FLOW_FIXED_KEYWORDS.some((k) => category.includes(k))) return 'fixed';
+  if (SNAPSHOT_EXCLUDE_CATEGORY_KEYWORDS.some((k) => category.includes(k))) return 'exclude';
+  if (SNAPSHOT_FIXED_CATEGORY_KEYWORDS.some((k) => category.includes(k))) return 'fixed';
   return 'variable';
 };
 
@@ -2049,13 +1999,10 @@ const DASHBOARD_LIVING_COST_ATTENTION_RATE = 1.1;
 const DASHBOARD_FRESHNESS_STALE_DAYS = 3;
 const DASHBOARD_INVESTMENT_NAME_KEYWORDS = ['投信積立', '確定拠出年金', 'カクテイキヨシユツネンキン'];
 
-const dashboardFormatMonthKey_ = (date) =>
-  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-
 const dashboardShiftMonthKey_ = (monthKey, delta) => {
   const [year, month] = String(monthKey).split('-').map(Number);
   const shifted = new Date(year, month - 1 + delta, 1);
-  return dashboardFormatMonthKey_(shifted);
+  return formatMonthKey_(shifted);
 };
 
 const dashboardIsInvestmentExecution_ = (item) => {
@@ -2431,13 +2378,10 @@ const dashboardIsRecentSpending_ = (item) => {
   return dashboardGetExpenseType_(item) !== 'exclude' || dashboardIsSpecialExpense_(item);
 };
 
-const dashboardShiftDateKey_ = (dateKey, deltaDays) => {
-  const baseMs = Date.parse(dateKey + 'T00:00:00Z');
-  const shifted = new Date(baseMs + deltaDays * DASHBOARD_RSS_DAY_MS);
-  const month = String(shifted.getUTCMonth() + 1).padStart(2, '0');
-  const day = String(shifted.getUTCDate()).padStart(2, '0');
-  return `${shifted.getUTCFullYear()}-${month}-${day}`;
-};
+const dashboardShiftDateKey_ = (dateKey, deltaDays) =>
+  dashboardUtcDateKey_(
+    new Date(Date.parse(dateKey + 'T00:00:00Z') + deltaDays * DASHBOARD_RSS_DAY_MS),
+  );
 
 export function dashboardBuildRecentExpenses_(cashFlow) {
   const rows = Array.isArray(cashFlow) ? cashFlow : [];
@@ -2969,9 +2913,6 @@ const dashboardCalculateRequiredAssets_ = ({
   return Math.max(0, A);
 };
 
-const dashboardToMonthKey_ = (date) =>
-  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}`;
-
 const dashboardCalculateCurrentMonthlyExpense_ = ({
   baseMonthlyExpense,
   monthlyInflationRate,
@@ -2986,7 +2927,7 @@ const dashboardCalculateCurrentMonthlyExpense_ = ({
 
   const currentDate = new Date(simulationStartDate);
   currentDate.setMonth(currentDate.getMonth() + monthIndex);
-  const currentMonthKey = dashboardToMonthKey_(currentDate);
+  const currentMonthKey = formatMonthKey_(currentDate);
 
   const isIndependent = currentMonthKey >= DASHBOARD_INDEPENDENCE_MONTH_KEY;
   const effectiveReduction = isIndependent ? lifestyleReductionFactor : 1.0;
