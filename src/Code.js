@@ -1298,14 +1298,16 @@ function serveWarmCache_(parameter) {
 // World sheet is developed markets only), the emerging share
 // is the remainder, and the "developed" set (MSCI Kokusai /
 // World ex Japan) drops Japan and the emerging share from the
-// ACWI set and renormalizes the rest to 100. Every step is
+// ACWI set and renormalizes the rest to 100. The "acwi_ex_japan"
+// set (all-country ex Japan) likewise drops only Japan from
+// the ACWI set and renormalizes the rest to 100. Every step is
 // strictly validated; on any failure the
 // current weights are kept untouched, so a blocked or changed
 // source can never corrupt the allocation.
 
 const REGION_WEIGHTS_FILE_NAME = 'region-weights.csv';
 const REGION_WEIGHTS_KEY = 'region-weights';
-const REGION_WEIGHT_SETS = ['acwi', 'developed', 'emerging'];
+const REGION_WEIGHT_SETS = ['acwi', 'acwi_ex_japan', 'developed', 'emerging'];
 const REGION_BUCKETS = ['japan', 'us', 'developed_other', 'emerging', 'other'];
 const REGION_FACTSHEET_ACWI_URL =
   'https://www.msci.com/documents/10199/dad48a28-fafb-4e4a-bfff-8ff7ddf9df90';
@@ -1320,9 +1322,12 @@ const REGION_FACTSHEET_WORLD_URL =
 // 100 - 64.63 / 72.77 * 100 (the developed share implied by the
 // two factsheets; Japan cross-checks: 5.72 * 0.8881 = 5.08).
 // The developed set renormalizes MSCI World ex Japan to 100.
+// The acwi_ex_japan set renormalizes the ACWI set without
+// Japan to 100 (US 64.63 / 94.92 = 68.09, and so on).
 const REGION_WEIGHTS_SEED_DATE = '2026-10-30';
 const REGION_WEIGHTS_SEED = {
   acwi: { japan: 5.08, us: 64.63, developed_other: 19.1, emerging: 11.19, other: 0 },
+  acwi_ex_japan: { japan: 0, us: 68.09, developed_other: 20.12, emerging: 11.79, other: 0 },
   developed: { japan: 0, us: 77.19, developed_other: 22.81, emerging: 0, other: 0 },
   emerging: { japan: 0, us: 0, developed_other: 0, emerging: 100, other: 0 },
 };
@@ -1552,7 +1557,9 @@ const normalizeRegionBuckets_ = (buckets) => {
  * developed only, so the developed share of ACWI is the ratio
  * of the two Japan weights; the emerging share is the
  * remainder. The "developed" set drops Japan and the emerging
- * share from the ACWI set and renormalizes the rest to 100.
+ * share from the ACWI set and renormalizes the rest to 100;
+ * the "acwi_ex_japan" set drops only Japan from the ACWI set
+ * and renormalizes the rest to 100.
  * Every input and derived share must land in its plausible
  * range; anything else returns null so the caller keeps the
  * current weights.
@@ -1588,6 +1595,9 @@ export function deriveRegionWeightSets_(acwiFacts, worldFacts) {
     emerging,
     other: 0,
   });
+  if (!acwi) {
+    return null;
+  }
   // The developed set is the ACWI developed portion (Japan and
   // emerging markets dropped) renormalized to 100.
   const developedBase = acwiFacts.us + developedOther;
@@ -1601,11 +1611,25 @@ export function deriveRegionWeightSets_(acwiFacts, worldFacts) {
     emerging: 0,
     other: 0,
   });
-  if (!acwi || !developed) {
+  // The acwi_ex_japan set is the ACWI set with Japan dropped,
+  // renormalized to 100.
+  const exJapanBase = 100 - acwi.japan;
+  if (exJapanBase <= 0) {
+    return null;
+  }
+  const acwiExJapan = normalizeRegionBuckets_({
+    japan: 0,
+    us: (acwi.us / exJapanBase) * 100,
+    developed_other: (acwi.developed_other / exJapanBase) * 100,
+    emerging: (acwi.emerging / exJapanBase) * 100,
+    other: 0,
+  });
+  if (!developed || !acwiExJapan) {
     return null;
   }
   return {
     acwi,
+    acwi_ex_japan: acwiExJapan,
     developed,
     emerging: { japan: 0, us: 0, developed_other: 0, emerging: 100, other: 0 },
   };

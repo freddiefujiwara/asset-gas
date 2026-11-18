@@ -459,6 +459,7 @@ describe('Code.js', () => {
       mfcf: [],
       weights: {
         acwi: { japan: 5.08, us: 64.63, developed_other: 19.1, emerging: 11.19, other: 0, effective_date: '2026-10-30' },
+        acwi_ex_japan: { japan: 0, us: 68.09, developed_other: 20.12, emerging: 11.79, other: 0, effective_date: '2026-10-30' },
         developed: { japan: 0, us: 77.19, developed_other: 22.81, emerging: 0, other: 0, effective_date: '2026-10-30' },
         emerging: { japan: 0, us: 0, developed_other: 0, emerging: 100, other: 0, effective_date: '2026-10-30' },
       },
@@ -508,6 +509,7 @@ describe('Code.js', () => {
         mfcf: [{ date: '2024-01-01', amount: 100 }],
         weights: {
           acwi: { japan: 5.08, us: 64.63, developed_other: 19.1, emerging: 11.19, other: 0, effective_date: '2026-10-30' },
+          acwi_ex_japan: { japan: 0, us: 68.09, developed_other: 20.12, emerging: 11.79, other: 0, effective_date: '2026-10-30' },
           developed: { japan: 0, us: 77.19, developed_other: 22.81, emerging: 0, other: 0, effective_date: '2026-10-30' },
           emerging: { japan: 0, us: 0, developed_other: 0, emerging: 100, other: 0, effective_date: '2026-10-30' },
         },
@@ -1699,6 +1701,17 @@ describe('Code.js', () => {
         expect(sets.acwi.effective_date).toBe('2026-10-30');
       });
 
+      it('accepts acwi_ex_japan rows', () => {
+        const sets = Code.parseRegionWeightsRows_([
+          { weight_set: 'acwi_ex_japan', bucket: 'us', weight: '68.09', effective_date: '2026-10-30' },
+          { weight_set: 'acwi_ex_japan', bucket: 'emerging', weight: '11.79', effective_date: '2026-10-30' },
+        ]);
+        expect(sets.acwi_ex_japan.us).toBe(68.09);
+        expect(sets.acwi_ex_japan.japan).toBe(0);
+        expect(sets.acwi_ex_japan.emerging).toBe(11.79);
+        expect(sets.acwi_ex_japan.effective_date).toBe('2026-10-30');
+      });
+
       it('ignores unknown sets, buckets and invalid weights', () => {
         const sets = Code.parseRegionWeightsRows_([
           { weight_set: 'nope', bucket: 'us', weight: '1', effective_date: '2026-10-30' },
@@ -1720,6 +1733,10 @@ describe('Code.js', () => {
         const sets = Code.buildRegionWeights_(null);
         expect(sets.acwi.us).toBe(64.63);
         expect(sets.acwi.effective_date).toBe('2026-10-30');
+        expect(sets.acwi_ex_japan).toEqual({
+          japan: 0, us: 68.09, developed_other: 20.12, emerging: 11.79, other: 0,
+          effective_date: '2026-10-30',
+        });
         expect(sets.developed.japan).toBe(0);
         expect(sets.emerging.emerging).toBe(100);
       });
@@ -1773,6 +1790,7 @@ describe('Code.js', () => {
           { us: 72.77, japan: 5.72 },
         );
         expect(sets.acwi).toEqual({ japan: 5.08, us: 64.63, developed_other: 19.1, emerging: 11.19, other: 0 });
+        expect(sets.acwi_ex_japan).toEqual({ japan: 0, us: 68.09, developed_other: 20.12, emerging: 11.79, other: 0 });
         expect(sets.developed).toEqual({ japan: 0, us: 77.19, developed_other: 22.81, emerging: 0, other: 0 });
         expect(sets.emerging).toEqual({ japan: 0, us: 0, developed_other: 0, emerging: 100, other: 0 });
       });
@@ -1830,6 +1848,9 @@ describe('Code.js', () => {
         expect(created[0].content).toContain('acwi,us,64.63,2026-10-30');
         expect(created[0].content).toContain('acwi,japan,5.08,2026-10-30');
         expect(created[0].content).toContain('acwi,emerging,11.19,2026-10-30');
+        expect(created[0].content).toContain('acwi_ex_japan,japan,0,2026-10-30');
+        expect(created[0].content).toContain('acwi_ex_japan,us,68.09,2026-10-30');
+        expect(created[0].content).toContain('acwi_ex_japan,emerging,11.79,2026-10-30');
         expect(created[0].content).toContain('developed,us,77.19,2026-10-30');
       });
 
@@ -1907,6 +1928,8 @@ describe('Code.js', () => {
         const result = Code.ensureRegionWeightsFile();
         expect(result.created).toBe(true);
         expect(created[0].content).toContain('acwi,us,64.63,2026-10-30');
+        expect(created[0].content).toContain('acwi_ex_japan,us,68.09,2026-10-30');
+        expect(created[0].content).toContain('acwi_ex_japan,developed_other,20.12,2026-10-30');
         expect(created[0].content).toContain('developed,us,77.19,2026-10-30');
       });
 
