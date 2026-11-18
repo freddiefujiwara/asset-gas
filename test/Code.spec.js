@@ -1604,24 +1604,63 @@ describe('Code.js', () => {
   });
 
   describe('region weights', () => {
-    const HOLDINGS_HEADER =
-      'Ticker,Name,Sector,Asset Class,Market Value,Weight (%),Notional Value,Quantity,Price,Location,Exchange,Currency';
-    const holdingRow = (ticker, weight, location, assetClass = 'Equity', sector = 'Technology') =>
-      `${ticker},SAMPLE ${ticker},${sector},${assetClass},1000,${weight},0,10,100,${location},XNYS,USD`;
-    // Country weights summing to 95.42 (inside the 95-105 window).
-    const COUNTRY_ROWS = [
-      ['United States', 64.63], ['Japan', 5.08], ['United Kingdom', 3.12],
-      ['Canada', 3.06], ['France', 2.4], ['Germany', 2.3], ['Switzerland', 2.2],
-      ['Australia', 1.8], ['Netherlands', 1.1], ['Taiwan', 3.23], ['China', 2.9],
-      ['India', 2], ['South Korea', 1.6],
-    ];
-    const holdingsCsv = (rows = COUNTRY_ROWS) =>
+    const ACWI_URL = 'https://www.msci.com/documents/10199/dad48a28-fafb-4e4a-bfff-8ff7ddf9df90';
+    const WORLD_URL = 'https://www.msci.com/documents/10199/255599/msci-world-index-usd-net.pdf';
+
+    // Factsheet-like plain text, as the Drive document
+    // conversion of the PDF would produce it. The country
+    // weights match the published 2026-10-30 values, so the
+    // derived sets must reproduce the seed exactly.
+    const factsheetText = ({ us, japan, date = 'OCT 30, 2026', other = '20.88' }) =>
       [
-        'iShares MSCI ACWI ETF',
-        'Fund Holdings as of a date',
-        HOLDINGS_HEADER,
-        ...rows.map(([location, weight], i) => holdingRow(`T${i}`, weight, location)),
+        'MSCI Index Factsheet',
+        `INDEX PERFORMANCE — NET RETURNS (%) (${date}) FUNDAMENTALS (${date})`,
+        'The index was launched on May 31, 1990. Data prior to the launch date is back-tested.',
+        'INDEX CHARACTERISTICS TOP 10 CONSTITUENTS',
+        'APPLE US 5.02 Info Tech',
+        'SECTOR WEIGHTS COUNTRY WEIGHTS',
+        `Information Technology 31.18% Financials 16.63% United States ${us}% Japan ${japan}% Taiwan 3.23% United Kingdom 3.12% Canada 3.06% Other ${other}%`,
+        '* DM countries include: Australia, Austria, Belgium, Canada, Denmark, Finland, France, Germany, Hong Kong, Ireland, Israel, Italy, Japan, Netherlands, New Zealand, Norway, Portugal, Singapore, Spain, Sweden, Switzerland, the UK and the US.',
       ].join('\n');
+    const ACWI_TEXT = factsheetText({ us: '64.63', japan: '5.08' });
+    const WORLD_TEXT = factsheetText({ us: '72.77', japan: '5.72', other: '11.91' });
+
+    // Route UrlFetchApp.fetch through the whole pipeline:
+    // factsheet PDF download -> Drive conversion upload ->
+    // text export. Returns the trash spy for the temp files.
+    const mockFactsheetPipeline = ({ acwiText = ACWI_TEXT, worldText = WORLD_TEXT } = {}) => {
+      global.ScriptApp = { getOAuthToken: vi.fn(() => 'test-oauth-token') };
+      global.Utilities.newBlob = vi.fn(() => ({ getBytes: () => [37, 80, 68, 70] }));
+      const setTrashed = vi.fn();
+      global.DriveApp.getFileById = vi.fn(() => ({ setTrashed }));
+      const exportedByTempId = new Map();
+      let pendingText = acwiText;
+      let counter = 0;
+      global.UrlFetchApp.fetch = vi.fn((url) => {
+        if (url === ACWI_URL || url === WORLD_URL) {
+          pendingText = url === ACWI_URL ? acwiText : worldText;
+          if (pendingText instanceof Error) {
+            throw pendingText;
+          }
+          return {
+            getResponseCode: () => 200,
+            getBlob: () => ({ getBytes: () => [37, 80, 68, 70] }),
+          };
+        }
+        if (url.includes('/upload/drive/v3/files')) {
+          counter += 1;
+          const id = `temp-${counter}`;
+          exportedByTempId.set(id, pendingText);
+          return { getResponseCode: () => 200, getContentText: () => JSON.stringify({ id }) };
+        }
+        if (url.includes('/export')) {
+          const id = url.match(/files\/([^/]+)\/export/)[1];
+          return { getResponseCode: () => 200, getContentText: () => exportedByTempId.get(id) ?? '' };
+        }
+        throw new Error(`unexpected fetch: ${url}`);
+      });
+      return { setTrashed };
+    };
 
     const createIterator = (files) => {
       let index = 0;
@@ -1694,87 +1733,171 @@ describe('Code.js', () => {
       });
     });
 
-    describe('parseAcwiHoldingsCsv_', () => {
-      it('aggregates weights by location and excludes cash rows', () => {
-        const csv = [
-          'iShares MSCI ACWI ETF',
-          HOLDINGS_HEADER,
-          holdingRow('AAPL', 5.02, 'United States'),
-          holdingRow('MSFT', 4.5, 'United States'),
-          holdingRow('TSMC', 1.78, 'Taiwan'),
-          holdingRow('CASH', 0.24, 'United States', 'Cash', 'Cash and/or Derivatives'),
+    describe('parseMsciFactsheet_', () => {
+      it('extracts the as-of date and the US / Japan country weights', () => {
+        const facts = Code.parseMsciFactsheet_(ACWI_TEXT);
+        expect(facts).toEqual({ asOf: '2026-10-30', us: 64.63, japan: 5.08 });
+      });
+
+      it('tolerates casing and line-break variation from the conversion', () => {
+        const text = [
+          'Index Factsheet',
+          'Index Performance (Oct 30, 2026)',
+          'Country Weights',
+          'United States',
+          '64.63 %',
+          'Japan 5.08 %',
         ].join('\n');
-        const weights = Code.parseAcwiHoldingsCsv_(csv);
-        expect(weights['United States']).toBeCloseTo(9.52, 5);
-        expect(weights.Taiwan).toBeCloseTo(1.78, 5);
+        expect(Code.parseMsciFactsheet_(text)).toEqual({ asOf: '2026-10-30', us: 64.63, japan: 5.08 });
       });
 
-      it('returns null for a bot-check HTML page', () => {
-        expect(Code.parseAcwiHoldingsCsv_('<!DOCTYPE html><html>Location</html>')).toBeNull();
+      it('returns null without a COUNTRY WEIGHTS section', () => {
+        expect(Code.parseMsciFactsheet_('United States 64.63% Japan 5.08% OCT 30, 2026')).toBeNull();
       });
 
-      it('returns null when the holdings header is missing', () => {
-        expect(Code.parseAcwiHoldingsCsv_('a,b,c\n1,2,3')).toBeNull();
-        expect(Code.parseAcwiHoldingsCsv_(null)).toBeNull();
+      it('returns null when a country weight is missing', () => {
+        const text = factsheetText({ us: '64.63', japan: '5.08' }).replace('Japan 5.08%', 'Japan');
+        expect(Code.parseMsciFactsheet_(text)).toBeNull();
+      });
+
+      it('returns null for non-string input', () => {
+        expect(Code.parseMsciFactsheet_(null)).toBeNull();
+        expect(Code.parseMsciFactsheet_('')).toBeNull();
       });
     });
 
-    describe('aggregateRegionWeights_', () => {
-      it('builds acwi and developed sets that each sum to 100', () => {
-        const countryWeights = Object.fromEntries(COUNTRY_ROWS);
-        const sets = Code.aggregateRegionWeights_(countryWeights);
-        const sum = (set) => ['japan', 'us', 'developed_other', 'emerging', 'other']
-          .reduce((acc, bucket) => acc + set[bucket], 0);
-        expect(sum(sets.acwi)).toBeCloseTo(100, 5);
-        expect(sum(sets.developed)).toBeCloseTo(100, 5);
-        expect(sets.acwi.us).toBeCloseTo(67.7, 0);
-        expect(sets.acwi.emerging).toBeCloseTo(10.2, 0);
-        expect(sets.developed.japan).toBe(0);
-        expect(sets.developed.us).toBeGreaterThan(sets.acwi.us);
-        expect(sets.emerging.emerging).toBe(100);
+    describe('deriveRegionWeightSets_', () => {
+      it('reproduces the seed weights from the 2026-10-30 factsheet values', () => {
+        const sets = Code.deriveRegionWeightSets_(
+          { us: 64.63, japan: 5.08 },
+          { us: 72.77, japan: 5.72 },
+        );
+        expect(sets.acwi).toEqual({ japan: 5.08, us: 64.63, developed_other: 19.1, emerging: 11.19, other: 0 });
+        expect(sets.developed).toEqual({ japan: 0, us: 77.19, developed_other: 22.81, emerging: 0, other: 0 });
+        expect(sets.emerging).toEqual({ japan: 0, us: 0, developed_other: 0, emerging: 100, other: 0 });
       });
 
-      it('returns null when the total is outside the 95-105 window', () => {
-        expect(Code.aggregateRegionWeights_({ 'United States': 40, Japan: 5 })).toBeNull();
-        expect(Code.aggregateRegionWeights_({ 'United States': 120 })).toBeNull();
-        expect(Code.aggregateRegionWeights_(null)).toBeNull();
+      it('returns null when the World Japan weight does not exceed the ACWI one', () => {
+        expect(Code.deriveRegionWeightSets_({ us: 64.63, japan: 5.72 }, { us: 72.77, japan: 5.08 })).toBeNull();
+        expect(Code.deriveRegionWeightSets_({ us: 64.63, japan: 5.08 }, { us: 72.77, japan: 5.08 })).toBeNull();
+      });
+
+      it('returns null when a weight is outside its plausible range', () => {
+        expect(Code.deriveRegionWeightSets_({ us: 90, japan: 5.08 }, { us: 72.77, japan: 5.72 })).toBeNull();
+        expect(Code.deriveRegionWeightSets_({ us: 64.63, japan: 1.5 }, { us: 72.77, japan: 5.72 })).toBeNull();
+      });
+
+      it('returns null when the implied emerging share is implausible', () => {
+        // Developed share 3.5 / 5.5 = 63.6% -> emerging 36.4%.
+        expect(Code.deriveRegionWeightSets_({ us: 55, japan: 3.5 }, { us: 60, japan: 5.5 })).toBeNull();
+      });
+
+      it('returns null for missing input', () => {
+        expect(Code.deriveRegionWeightSets_(null, { us: 72.77, japan: 5.72 })).toBeNull();
+        expect(Code.deriveRegionWeightSets_({ us: 64.63, japan: 5.08 }, null)).toBeNull();
+      });
+    });
+
+    describe('convertPdfBlobToText_', () => {
+      it('returns the exported text and trashes the temporary file', () => {
+        const { setTrashed } = mockFactsheetPipeline();
+        const text = Code.convertPdfBlobToText_({ getBytes: () => [37, 80, 68, 70] });
+        expect(text).toBe(ACWI_TEXT);
+        expect(setTrashed).toHaveBeenCalledWith(true);
+      });
+
+      it('returns null and creates nothing to trash when the upload fails', () => {
+        const { setTrashed } = mockFactsheetPipeline();
+        const pipeline = global.UrlFetchApp.fetch;
+        global.UrlFetchApp.fetch = vi.fn((url, ...rest) =>
+          url.includes('/upload/drive/v3/files')
+            ? { getResponseCode: () => 500, getContentText: () => '' }
+            : pipeline(url, ...rest));
+        expect(Code.convertPdfBlobToText_({ getBytes: () => [] })).toBeNull();
+        expect(setTrashed).not.toHaveBeenCalled();
       });
     });
 
     describe('updateRegionWeights', () => {
-      it('keeps the current CSV when the source returns HTML', () => {
-        global.UrlFetchApp.fetch = vi.fn(() => ({
-          getResponseCode: () => 200,
-          getContentText: () => '<!DOCTYPE html><html>bot check</html>',
-        }));
+      it('rewrites region-weights.csv with the factsheet date and derived weights', () => {
+        mockFactsheetPipeline();
+        const { created } = mockWeightsFolder();
+        const result = Code.updateRegionWeights();
+        expect(result.updated).toBe(true);
+        expect(result.effectiveDate).toBe('2026-10-30');
+        expect(created).toHaveLength(1);
+        expect(created[0].name).toBe('region-weights.csv');
+        expect(created[0].content).toContain('acwi,us,64.63,2026-10-30');
+        expect(created[0].content).toContain('acwi,japan,5.08,2026-10-30');
+        expect(created[0].content).toContain('acwi,emerging,11.19,2026-10-30');
+        expect(created[0].content).toContain('developed,us,77.19,2026-10-30');
+      });
+
+      it('keeps the current CSV when a factsheet cannot be fetched', () => {
+        mockFactsheetPipeline({ acwiText: new Error('network down') });
         const { created } = mockWeightsFolder();
         const result = Code.updateRegionWeights();
         expect(result.updated).toBe(false);
         expect(created).toHaveLength(0);
       });
 
-      it('keeps the current CSV when the fetch itself fails', () => {
-        global.UrlFetchApp.fetch = vi.fn(() => ({
-          getResponseCode: () => 503,
-          getContentText: () => '',
-        }));
+      it('keeps the current CSV when the conversion upload fails', () => {
+        mockFactsheetPipeline();
+        const pipeline = global.UrlFetchApp.fetch;
+        global.UrlFetchApp.fetch = vi.fn((url, ...rest) =>
+          url.includes('/upload/drive/v3/files')
+            ? { getResponseCode: () => 403, getContentText: () => '' }
+            : pipeline(url, ...rest));
         const { created } = mockWeightsFolder();
         expect(Code.updateRegionWeights().updated).toBe(false);
         expect(created).toHaveLength(0);
       });
 
-      it('rewrites region-weights.csv when the source parses and validates', () => {
-        global.UrlFetchApp.fetch = vi.fn(() => ({
-          getResponseCode: () => 200,
-          getContentText: () => holdingsCsv(),
-        }));
+      it('keeps the current CSV when the factsheet text does not parse', () => {
+        mockFactsheetPipeline({ acwiText: 'some unrelated document', worldText: 'another one' });
+        const { created } = mockWeightsFolder();
+        expect(Code.updateRegionWeights().updated).toBe(false);
+        expect(created).toHaveLength(0);
+      });
+
+      it('keeps the current CSV when the two factsheets disagree on the date', () => {
+        mockFactsheetPipeline({
+          worldText: factsheetText({ us: '72.77', japan: '5.72', date: 'NOV 28, 2026', other: '11.91' }),
+        });
         const { created } = mockWeightsFolder();
         const result = Code.updateRegionWeights();
-        expect(result.updated).toBe(true);
-        expect(created).toHaveLength(1);
-        expect(created[0].name).toBe('region-weights.csv');
-        expect(created[0].content).toContain('acwi,us,');
-        expect(created[0].content).toContain(`acwi,japan,5.32,${result.effectiveDate}`);
+        expect(result.updated).toBe(false);
+        expect(result.reason).toContain('dates differ');
+        expect(created).toHaveLength(0);
+      });
+
+      it('keeps the current CSV when the derived weights fail validation', () => {
+        mockFactsheetPipeline({
+          worldText: factsheetText({ us: '72.77', japan: '5.08', other: '11.91' }),
+        });
+        const { created } = mockWeightsFolder();
+        expect(Code.updateRegionWeights().updated).toBe(false);
+        expect(created).toHaveLength(0);
+      });
+
+      it('keeps the current CSV when the factsheet is older than the weights on file', () => {
+        mockFactsheetPipeline();
+        const existingContent = [
+          'weight_set,bucket,weight,effective_date',
+          'acwi,japan,5.08,2026-11-30',
+          'acwi,us,64.63,2026-11-30',
+        ].join('\n');
+        const existing = {
+          getName: () => 'region-weights.csv',
+          getBlob: () => ({ getDataAsString: () => existingContent }),
+          setContent: vi.fn(),
+        };
+        const { created } = mockWeightsFolder([existing]);
+        const result = Code.updateRegionWeights();
+        expect(result.updated).toBe(false);
+        expect(result.reason).toContain('older than current');
+        expect(existing.setContent).not.toHaveBeenCalled();
+        expect(created).toHaveLength(0);
       });
     });
 

@@ -933,17 +933,27 @@ index funds into region buckets instead of one opaque
   factsheets as of 2026-10-30 (ACWI: US 64.63%, Japan 5.08%;
   emerging share 11.19% implied by the two factsheets).
 - `updateRegionWeights` (monthly batch) refreshes the CSV
-  from the iShares MSCI ACWI ETF holdings file, a public
-  proxy for the ACWI country composition. Countries are
-  bucketed by the MSCI market classification; the
-  `developed` set (World ex Japan) is derived from the same
-  data by dropping Japan and emerging markets and
-  renormalizing. The fetch is validated before anything is
-  written: the parsed country total must land within
-  95-105%, and each stored set is normalized to sum to
-  exactly 100. On any failure (the source is bot-protected
-  from some networks, so failures are expected) the current
-  CSV is kept untouched and the run reports
+  from the official MSCI ACWI and MSCI World factsheet PDFs.
+  (The first version fetched the iShares MSCI ACWI ETF
+  holdings CSV, but iShares retired that endpoint in a site
+  redesign, so the source moved to the factsheets — the same
+  publications the seed was derived from.) A factsheet only
+  lists the top country weights, so the buckets are derived:
+  the ACWI sheet gives the US and Japan weights directly,
+  the developed share is the ratio of the two sheets' Japan
+  weights (World is developed only), the emerging share is
+  the remainder, and the `developed` set drops Japan and the
+  emerging share from the ACWI set and renormalizes the rest
+  to 100. PDF text is extracted through the Drive
+  conversion (upload with a Google Docs target mime type via
+  the Drive REST API, export as text, trash the temporary
+  file). Everything is validated before anything is
+  written: the two sheets must share an "as of" date, every
+  value and derived share must land in its plausible range,
+  a factsheet older than the weights on file never
+  overwrites them, and each stored set is normalized to sum
+  to exactly 100. On any failure the current CSV is kept
+  untouched and the run reports
   `{ updated: false, reason: ... }`.
 - One-time setup per project, from the Apps Script editor:
   run `ensureRegionWeightsFile()` to create the CSV from the

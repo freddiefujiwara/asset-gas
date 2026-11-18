@@ -1286,21 +1286,31 @@ function serveWarmCache_(parameter) {
 // structured form is the contract the front end consumes.
 //
 // updateRegionWeights (monthly, on the 2nd) refreshes the CSV
-// from the iShares MSCI ACWI ETF holdings file — a public proxy
-// for the MSCI ACWI country composition. The fetch is strictly
-// validated (the bucket total must land within 95-105% before
-// normalization); on any failure the current weights are kept
-// untouched, so a blocked or changed source can never corrupt
-// the allocation. The "developed" set (MSCI Kokusai / World ex
-// Japan) is derived from the same country data by dropping
-// Japan and the emerging markets and renormalizing.
+// from the official MSCI index factsheets (ACWI and World PDF).
+// The first version fetched the iShares MSCI ACWI ETF holdings
+// CSV, but iShares retired that endpoint in a site redesign
+// (the URL now returns the product page HTML), so the source
+// moved to the factsheets — the same publications the seed
+// weights below were derived from. A factsheet only lists the
+// top country weights, so the buckets are derived: the ACWI
+// sheet gives the US and Japan weights directly, the developed
+// share is the ratio of the two sheets' Japan weights (the
+// World sheet is developed markets only), the emerging share
+// is the remainder, and the "developed" set (MSCI Kokusai /
+// World ex Japan) drops Japan and the emerging share from the
+// ACWI set and renormalizes the rest to 100. Every step is
+// strictly validated; on any failure the
+// current weights are kept untouched, so a blocked or changed
+// source can never corrupt the allocation.
 
 const REGION_WEIGHTS_FILE_NAME = 'region-weights.csv';
 const REGION_WEIGHTS_KEY = 'region-weights';
 const REGION_WEIGHT_SETS = ['acwi', 'developed', 'emerging'];
 const REGION_BUCKETS = ['japan', 'us', 'developed_other', 'emerging', 'other'];
-const REGION_WEIGHTS_SOURCE_URL =
-  'https://www.ishares.com/us/products/239696/ishares-msci-acwi-etf/1467271812596.ajax?tab=all&fileType=csv';
+const REGION_FACTSHEET_ACWI_URL =
+  'https://www.msci.com/documents/10199/dad48a28-fafb-4e4a-bfff-8ff7ddf9df90';
+const REGION_FACTSHEET_WORLD_URL =
+  'https://www.msci.com/documents/10199/255599/msci-world-index-usd-net.pdf';
 
 // Seed weights, used until region-weights.csv exists and as the
 // buildRegionWeights_ fallback. Derived from the official MSCI
@@ -1316,24 +1326,6 @@ const REGION_WEIGHTS_SEED = {
   developed: { japan: 0, us: 77.19, developed_other: 22.81, emerging: 0, other: 0 },
   emerging: { japan: 0, us: 0, developed_other: 0, emerging: 100, other: 0 },
 };
-
-// MSCI market classification used to bucket iShares "Location"
-// values. Developed markets other than the US and Japan fold
-// into developed_other; anything unrecognized is ignored by the
-// fetch parser and only shows up in the residual "other" share.
-const REGION_DM_COUNTRIES = [
-  'Australia', 'Austria', 'Belgium', 'Canada', 'Denmark', 'Finland',
-  'France', 'Germany', 'Hong Kong', 'Ireland', 'Israel', 'Italy',
-  'Netherlands', 'New Zealand', 'Norway', 'Portugal', 'Singapore',
-  'Spain', 'Sweden', 'Switzerland', 'United Kingdom',
-];
-const REGION_EM_COUNTRIES = [
-  'Brazil', 'Chile', 'China', 'Colombia', 'Czech Republic', 'Egypt',
-  'Greece', 'Hungary', 'India', 'Indonesia', 'Korea', 'Kuwait',
-  'Malaysia', 'Mexico', 'Peru', 'Philippines', 'Poland', 'Qatar',
-  'Saudi Arabia', 'South Africa', 'South Korea', 'Taiwan', 'Thailand',
-  'Turkey', 'United Arab Emirates',
-];
 
 /**
  * Reshape region-weights.csv rows into the structured weights
@@ -1453,53 +1445,87 @@ export function ensureRegionWeightsFile() {
   return { created: true, effectiveDate: REGION_WEIGHTS_SEED_DATE };
 }
 
-/**
- * Parse the iShares holdings CSV into per-country weights
- * ({ 'United States': 64.6, Japan: 5.1, ... }). The file has a
- * preamble above the holdings table, so the header row (first
- * cell "Ticker", with "Location" and "Weight (%)" columns) is
- * located first. Cash / derivative rows are excluded. Returns
- * null when the content does not look like the holdings file
- * (for example a bot-check HTML page) or nothing usable parses.
- */
-export function parseAcwiHoldingsCsv_(csvText) {
-  if (typeof csvText !== 'string' || !csvText.includes('Location')) {
-    return null;
-  }
-  const table = Utilities.parseCsv(csvText);
-  const headerIndex = table.findIndex(
-    (row) => row[0] === 'Ticker' && row.includes('Location') && row.includes('Weight (%)'),
+const REGION_FACTSHEET_MONTHS_ = {
+  jan: '01', feb: '02', mar: '03', apr: '04', may: '05', jun: '06',
+  jul: '07', aug: '08', sep: '09', oct: '10', nov: '11', dec: '12',
+};
+
+// The "as of" date printed on an MSCI factsheet, normalized to
+// YYYY-MM-DD. Factsheets print it as "OCT 30, 2026"; the Drive
+// document conversion may change the casing, so the match is
+// case-insensitive and also accepts the day-first form. A sheet
+// carries other dates too (index launch dates such as 1990),
+// so only recent years count, and the as-of date — repeated in
+// the performance / fundamentals headers and the title block —
+// wins by frequency over one-off mentions.
+const parseFactsheetDate_ = (text) => {
+  const counts = new Map();
+  const collect = (pattern, toKey) => {
+    for (const match of text.matchAll(pattern)) {
+      const key = toKey(match);
+      if (key) {
+        counts.set(key, (counts.get(key) ?? 0) + 1);
+      }
+    }
+  };
+  collect(
+    /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),\s*(\d{4})\b/gi,
+    (m) =>
+      Number(m[3]) >= 2020
+        ? `${m[3]}-${REGION_FACTSHEET_MONTHS_[m[1].slice(0, 3).toLowerCase()]}-${String(m[2]).padStart(2, '0')}`
+        : null,
   );
-  if (headerIndex < 0) {
-    return null;
-  }
-  const header = table[headerIndex];
-  const locationIdx = header.indexOf('Location');
-  const weightIdx = header.indexOf('Weight (%)');
-  const assetClassIdx = header.indexOf('Asset Class');
-  const sectorIdx = header.indexOf('Sector');
-
-  const countryWeights = {};
-  let total = 0;
-  table.slice(headerIndex + 1).forEach((row) => {
-    const assetClass = assetClassIdx >= 0 ? String(row[assetClassIdx] ?? '') : '';
-    const sector = sectorIdx >= 0 ? String(row[sectorIdx] ?? '') : '';
-    if (/cash/i.test(assetClass) || /cash/i.test(sector)) {
-      return;
+  collect(
+    /\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})\b/gi,
+    (m) =>
+      Number(m[3]) >= 2020
+        ? `${m[3]}-${REGION_FACTSHEET_MONTHS_[m[2].slice(0, 3).toLowerCase()]}-${String(m[1]).padStart(2, '0')}`
+        : null,
+  );
+  let best = null;
+  counts.forEach((count, key) => {
+    if (!best || count > best.count) {
+      best = { key, count };
     }
-    const location = String(row[locationIdx] ?? '').trim();
-    const weight = Number(row[weightIdx]);
-    if (!location || !Number.isFinite(weight) || weight <= 0) {
-      return;
-    }
-    countryWeights[location] = (countryWeights[location] ?? 0) + weight;
-    total += weight;
   });
+  return best ? best.key : null;
+};
 
-  if (!countryWeights['United States'] || total <= 0) {
+// One "<country> <weight>%" pair from the COUNTRY WEIGHTS
+// listing. Country names appear elsewhere on the sheet too
+// (the market-classification footnote lists every country, the
+// constituents table uses country codes), so the search is
+// restricted to the text after the COUNTRY WEIGHTS heading and
+// requires a number directly attached to the name.
+const factsheetCountryWeight_ = (section, country) => {
+  const match = section.match(new RegExp(`${country}\\s+(\\d+(?:\\.\\d+)?)\\s*%`));
+  return match ? Number(match[1]) : null;
+};
+
+/**
+ * Parse the plain text of an MSCI index factsheet (obtained via
+ * the Drive document conversion of the PDF) into
+ * { asOf: 'YYYY-MM-DD', us, japan } — the US and Japan weights
+ * from the COUNTRY WEIGHTS section plus the sheet's "as of"
+ * date. Returns null when any piece is missing, so a layout
+ * change at MSCI can never feed wrong numbers downstream.
+ */
+export function parseMsciFactsheet_(text) {
+  if (typeof text !== 'string' || !text) {
     return null;
   }
-  return countryWeights;
+  const headingIndex = text.search(/COUNTRY\s+WEIGHTS/i);
+  if (headingIndex < 0) {
+    return null;
+  }
+  const section = text.slice(headingIndex, headingIndex + 3000);
+  const us = factsheetCountryWeight_(section, 'United States');
+  const japan = factsheetCountryWeight_(section, 'Japan');
+  const asOf = parseFactsheetDate_(text);
+  if (us === null || japan === null || !asOf) {
+    return null;
+  }
+  return { asOf, us, japan };
 }
 
 const normalizeRegionBuckets_ = (buckets) => {
@@ -1520,44 +1546,62 @@ const normalizeRegionBuckets_ = (buckets) => {
 };
 
 /**
- * Aggregate per-country weights into the region weight sets.
- * The grand total must land within 95-105% (the holdings file
- * carries a small cash / unclassified residue); anything else
- * returns null so the caller keeps the current weights.
+ * Derive the region weight sets from the two factsheets'
+ * US / Japan weights ({ us, japan } for each). The ACWI sheet
+ * covers developed + emerging markets while the World sheet is
+ * developed only, so the developed share of ACWI is the ratio
+ * of the two Japan weights; the emerging share is the
+ * remainder. The "developed" set drops Japan and the emerging
+ * share from the ACWI set and renormalizes the rest to 100.
+ * Every input and derived share must land in its plausible
+ * range; anything else returns null so the caller keeps the
+ * current weights.
  */
-export function aggregateRegionWeights_(countryWeights) {
-  if (!countryWeights || typeof countryWeights !== 'object') {
+export function deriveRegionWeightSets_(acwiFacts, worldFacts) {
+  if (!acwiFacts || !worldFacts) {
     return null;
   }
-  const sumOf = (countries) =>
-    countries.reduce((sum, country) => sum + (countryWeights[country] ?? 0), 0);
-  const japan = countryWeights['Japan'] ?? 0;
-  const us = countryWeights['United States'] ?? 0;
-  const developedOther = sumOf(REGION_DM_COUNTRIES);
-  const emerging = sumOf(REGION_EM_COUNTRIES);
-  const total = Object.values(countryWeights).reduce((sum, w) => sum + (Number(w) || 0), 0);
-  if (total < 95 || total > 105 || us <= 0) {
+  const inRange = (value, min, max) =>
+    Number.isFinite(value) && value >= min && value <= max;
+  if (
+    !inRange(acwiFacts.us, 50, 75) ||
+    !inRange(acwiFacts.japan, 3, 8) ||
+    !inRange(worldFacts.us, 50, 75) ||
+    !inRange(worldFacts.japan, 3, 8) ||
+    !(worldFacts.japan > acwiFacts.japan)
+  ) {
+    return null;
+  }
+  const developedShare = (acwiFacts.japan / worldFacts.japan) * 100;
+  const emerging = 100 - developedShare;
+  if (!inRange(developedShare, 80, 95) || !inRange(emerging, 5, 20)) {
+    return null;
+  }
+  const developedOther = developedShare - acwiFacts.us - acwiFacts.japan;
+  if (developedOther < 0) {
     return null;
   }
   const acwi = normalizeRegionBuckets_({
-    japan,
-    us,
+    japan: acwiFacts.japan,
+    us: acwiFacts.us,
     developed_other: developedOther,
     emerging,
-    other: Math.max(0, total - japan - us - developedOther - emerging),
+    other: 0,
   });
-  const developedBase = us + developedOther;
-  if (!acwi || developedBase <= 0) {
+  // The developed set is the ACWI developed portion (Japan and
+  // emerging markets dropped) renormalized to 100.
+  const developedBase = acwiFacts.us + developedOther;
+  if (developedBase <= 0) {
     return null;
   }
   const developed = normalizeRegionBuckets_({
     japan: 0,
-    us: (us / developedBase) * 100,
+    us: (acwiFacts.us / developedBase) * 100,
     developed_other: (developedOther / developedBase) * 100,
     emerging: 0,
     other: 0,
   });
-  if (!developed) {
+  if (!acwi || !developed) {
     return null;
   }
   return {
@@ -1568,50 +1612,139 @@ export function aggregateRegionWeights_(countryWeights) {
 }
 
 /**
- * Fetch the ACWI country composition from the iShares holdings
- * file. Returns the parsed per-country weights, or null when
- * the source cannot be fetched or parsed (bot protection,
- * format change, network error) — never throws.
+ * Extract the text of a PDF through the Drive conversion:
+ * upload the blob via the Drive REST API with a Google Docs
+ * target mime type (which converts on upload), export the
+ * converted document as text/plain, and always trash the
+ * temporary file afterwards. Uses the script's own OAuth token
+ * over UrlFetch — no Advanced Drive Service needed, and the
+ * existing drive scope covers it. Returns null on any failure.
  */
-export function fetchAcwiCountryWeights_() {
+export function convertPdfBlobToText_(pdfBlob) {
+  let tempFileId = null;
   try {
-    const response = UrlFetchApp.fetch(REGION_WEIGHTS_SOURCE_URL, {
-      muteHttpExceptions: true,
-      headers: { 'User-Agent': 'Mozilla/5.0' },
-    });
+    const boundary = 'region-weights-conversion-boundary';
+    const metadata = {
+      name: 'region-weights-factsheet.tmp',
+      mimeType: 'application/vnd.google-apps.document',
+      parents: [dataFolderId_()],
+    };
+    const payload = Utilities.newBlob(
+      `--${boundary}\r\n` +
+        'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+        `${JSON.stringify(metadata)}\r\n` +
+        `--${boundary}\r\n` +
+        'Content-Type: application/pdf\r\n\r\n',
+    )
+      .getBytes()
+      .concat(pdfBlob.getBytes())
+      .concat(Utilities.newBlob(`\r\n--${boundary}--`).getBytes());
+    const headers = { Authorization: `Bearer ${ScriptApp.getOAuthToken()}` };
+    const upload = UrlFetchApp.fetch(
+      'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart',
+      {
+        method: 'post',
+        contentType: `multipart/related; boundary=${boundary}`,
+        headers,
+        payload: Utilities.newBlob(payload),
+        muteHttpExceptions: true,
+      },
+    );
+    if (upload.getResponseCode() !== 200) {
+      return null;
+    }
+    tempFileId = JSON.parse(upload.getContentText()).id;
+    if (!tempFileId) {
+      return null;
+    }
+    const exported = UrlFetchApp.fetch(
+      `https://www.googleapis.com/drive/v3/files/${tempFileId}/export?mimeType=text%2Fplain`,
+      { headers, muteHttpExceptions: true },
+    );
+    if (exported.getResponseCode() !== 200) {
+      return null;
+    }
+    return exported.getContentText();
+  } catch (e) {
+    return null;
+  } finally {
+    if (tempFileId) {
+      try {
+        DriveApp.getFileById(tempFileId).setTrashed(true);
+      } catch (e) {
+        // Best effort: a leftover .tmp document in the data
+        // folder is ignored by the CSV / XML scans.
+      }
+    }
+  }
+}
+
+/**
+ * Fetch one MSCI factsheet PDF and return its converted plain
+ * text, or null when the fetch or conversion fails (network
+ * error, format change) — never throws.
+ */
+export function fetchFactsheetText_(url) {
+  try {
+    const response = UrlFetchApp.fetch(url, { muteHttpExceptions: true });
     if (response.getResponseCode() !== 200) {
       return null;
     }
-    return parseAcwiHoldingsCsv_(response.getContentText());
+    return convertPdfBlobToText_(response.getBlob());
   } catch (e) {
     return null;
   }
 }
 
-const formatDateKey_ = (date) =>
-  `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(
-    date.getDate(),
-  ).padStart(2, '0')}`;
+// The effective_date currently recorded in region-weights.csv
+// (all sets share one date), or null when the file is missing
+// or unparsable.
+const currentRegionWeightsEffectiveDate_ = () => {
+  const file = findRegionWeightsFile_();
+  if (!file) {
+    return null;
+  }
+  const sets = parseRegionWeightsRows_(parseCsv_(file.getBlob().getDataAsString('UTF-8')));
+  if (!sets) {
+    return null;
+  }
+  const dates = REGION_WEIGHT_SETS.map((name) => sets[name]?.effective_date).filter(Boolean);
+  return dates.length ? dates.sort().at(-1) : null;
+};
 
 /**
  * Monthly batch entry point (trigger: 2nd of each month,
  * 07:00-08:00 JST): refresh region-weights.csv from the latest
- * published ACWI country composition. When the source cannot
- * be fetched or the numbers fail validation, the current CSV
- * is kept and the result reports updated: false — the weights
- * simply stay one month older, which the front end surfaces
- * through effective_date.
+ * MSCI ACWI / World factsheets. When a sheet cannot be fetched
+ * or converted, the two sheets disagree on the "as of" date,
+ * the numbers fail validation, or the sheets are older than
+ * the weights on file, the current CSV is kept and the result
+ * reports updated: false — the weights simply stay one month
+ * older, which the front end surfaces through effective_date.
  */
 export function updateRegionWeights() {
-  const countryWeights = fetchAcwiCountryWeights_();
-  if (!countryWeights) {
-    return { updated: false, reason: 'source fetch or parse failed; keeping current weights' };
+  const acwiText = fetchFactsheetText_(REGION_FACTSHEET_ACWI_URL);
+  const worldText = fetchFactsheetText_(REGION_FACTSHEET_WORLD_URL);
+  if (!acwiText || !worldText) {
+    return { updated: false, reason: 'factsheet fetch or conversion failed; keeping current weights' };
   }
-  const sets = aggregateRegionWeights_(countryWeights);
+  const acwiFacts = parseMsciFactsheet_(acwiText);
+  const worldFacts = parseMsciFactsheet_(worldText);
+  if (!acwiFacts || !worldFacts) {
+    return { updated: false, reason: 'factsheet parse failed; keeping current weights' };
+  }
+  if (acwiFacts.asOf !== worldFacts.asOf) {
+    return { updated: false, reason: 'factsheet dates differ; keeping current weights' };
+  }
+  const sets = deriveRegionWeightSets_(acwiFacts, worldFacts);
   if (!sets) {
-    return { updated: false, reason: 'country weights failed validation; keeping current weights' };
+    return { updated: false, reason: 'derived weights failed validation; keeping current weights' };
   }
-  const effectiveDate = formatDateKey_(new Date());
+  const effectiveDate = acwiFacts.asOf;
+  const currentDate = currentRegionWeightsEffectiveDate_();
+  if (currentDate && effectiveDate < currentDate) {
+    return { updated: false, reason: 'factsheet is older than current weights; keeping current weights' };
+  }
   writeRegionWeightsCsv_(sets, effectiveDate);
   try {
     preCacheAll();
