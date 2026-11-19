@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import * as Code from '../src/Code.js';
 
 describe('Code.js', () => {
@@ -1602,6 +1602,227 @@ describe('Code.js', () => {
       expect(global.CacheService.getScriptCache).toHaveBeenCalled();
       const payload = JSON.parse(global.ContentService.createTextOutput.mock.calls.at(-1)[0]);
       expect(payload).toEqual({ status: true, cachedKeys: ['0', 'mfcf'] });
+    });
+  });
+
+  describe('self-service cache warming', () => {
+    // 2026-11-19 12:00 JST, and the newest file update one
+    // hour before it (11:00 JST): settled, and "today" in
+    // JST even though UTC is still on the same morning.
+    const NOW_MS = Date.UTC(2026, 10, 19, 3, 0, 0);
+    const LATEST_MS = Date.UTC(2026, 10, 19, 2, 0, 0);
+    const BATCH_KEY = `2026-11-19:${LATEST_MS}`;
+    const settledBatch = () =>
+      Array.from({ length: 13 }, (_, i) => LATEST_MS - i * 60 * 1000);
+
+    describe('expectedMfcfMonthKeys_', () => {
+      it('returns the current month plus the previous twelve, newest first', () => {
+        expect(Code.expectedMfcfMonthKeys_(new Date(2026, 10, 19))).toEqual([
+          '202611', '202610', '202609', '202608', '202607', '202606', '202605',
+          '202604', '202603', '202602', '202601', '202512', '202511',
+        ]);
+      });
+
+      it('crosses the year boundary', () => {
+        const keys = Code.expectedMfcfMonthKeys_(new Date(2027, 0, 15));
+        expect(keys[0]).toBe('202701');
+        expect(keys[1]).toBe('202612');
+        expect(keys[12]).toBe('202601');
+      });
+    });
+
+    describe('decideCacheWarm_', () => {
+      it('warms when all 13 files were updated today (JST) and the batch settled', () => {
+        expect(Code.decideCacheWarm_(settledBatch(), NOW_MS, '')).toEqual({
+          shouldWarm: true,
+          batchKey: BATCH_KEY,
+        });
+      });
+
+      it('counts an update just after JST midnight as today, not as yesterday UTC', () => {
+        const times = settledBatch();
+        // 00:30 JST on Nov 19 is still Nov 18 in UTC.
+        times[12] = Date.UTC(2026, 10, 18, 15, 30, 0);
+        expect(Code.decideCacheWarm_(times, NOW_MS, '').shouldWarm).toBe(true);
+      });
+
+      it('does not warm while a file is missing', () => {
+        expect(Code.decideCacheWarm_(settledBatch().slice(1), NOW_MS, '')).toEqual({
+          shouldWarm: false,
+          batchKey: '',
+        });
+      });
+
+      it('does not warm when one file is still on yesterday (JST)', () => {
+        const times = settledBatch();
+        // 23:59 JST on Nov 18.
+        times[12] = Date.UTC(2026, 10, 18, 14, 59, 0);
+        const decision = Code.decideCacheWarm_(times, NOW_MS, '');
+        expect(decision.shouldWarm).toBe(false);
+        expect(decision.batchKey).toBe(BATCH_KEY);
+      });
+
+      it('does not warm until the newest update is five minutes old', () => {
+        const times = settledBatch();
+        times[0] = NOW_MS - 4 * 60 * 1000;
+        expect(Code.decideCacheWarm_(times, NOW_MS, '').shouldWarm).toBe(false);
+        times[0] = NOW_MS - 5 * 60 * 1000;
+        expect(Code.decideCacheWarm_(times, NOW_MS, '').shouldWarm).toBe(true);
+      });
+
+      it('does not warm the same batch twice', () => {
+        expect(Code.decideCacheWarm_(settledBatch(), NOW_MS, BATCH_KEY).shouldWarm).toBe(false);
+      });
+
+      it('warms again when a re-export moves the newest timestamp', () => {
+        const times = settledBatch().map((t) => t + 30 * 60 * 1000);
+        const decision = Code.decideCacheWarm_(times, NOW_MS, BATCH_KEY);
+        expect(decision.shouldWarm).toBe(true);
+        expect(decision.batchKey).toBe(`2026-11-19:${LATEST_MS + 30 * 60 * 1000}`);
+      });
+
+      it('rejects malformed input without warming', () => {
+        expect(Code.decideCacheWarm_(null, NOW_MS, '')).toEqual({ shouldWarm: false, batchKey: '' });
+        const times = settledBatch();
+        times[3] = Number.NaN;
+        expect(Code.decideCacheWarm_(times, NOW_MS, '').shouldWarm).toBe(false);
+      });
+    });
+
+    describe('warmCacheWhenDataReady', () => {
+      let propertyStore;
+
+      const iteratorOf = (files) => {
+        let index = 0;
+        return {
+          hasNext: () => index < files.length,
+          next: () => files[index++],
+        };
+      };
+
+      const mfcfFile = (yyyymm, updatedMs) => ({
+        getName: () => `mfcf.${yyyymm}.xml`,
+        getLastUpdated: () => new Date(updatedMs),
+        getBlob: () => ({ getDataAsString: () => '' }),
+      });
+
+      // File names are derived from the (fake) clock the same
+      // way the entry point derives them, so the test does not
+      // depend on the machine time zone.
+      const monthKeysFrom = (ms) => {
+        const base = new Date(ms);
+        return Array.from({ length: 13 }, (_, i) => {
+          const month = new Date(base.getFullYear(), base.getMonth() - i, 1);
+          return `${month.getFullYear()}${String(month.getMonth() + 1).padStart(2, '0')}`;
+        });
+      };
+
+      beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(NOW_MS);
+        propertyStore = { DEBUG: 'true', NO_CACHE: 'false' };
+        global.PropertiesService = {
+          getScriptProperties: vi.fn(() => ({
+            getProperty: vi.fn((key) => propertyStore[key] ?? ''),
+            setProperty: vi.fn((key, value) => {
+              propertyStore[key] = String(value);
+            }),
+          })),
+        };
+      });
+
+      afterEach(() => {
+        vi.useRealTimers();
+      });
+
+      const mockDataFolder = (files) => {
+        global.DriveApp = {
+          getFolderById: vi.fn(() => ({
+            getFilesByName: vi.fn((name) => iteratorOf(files.filter((f) => f.getName() === name))),
+            getFiles: vi.fn(() => iteratorOf(files)),
+          })),
+        };
+      };
+
+      const settledFiles = () =>
+        monthKeysFrom(NOW_MS).map((yyyymm, i) => mfcfFile(yyyymm, LATEST_MS - i * 60 * 1000));
+
+      it('warms the cache and records the batch once the files are ready', () => {
+        mockDataFolder(settledFiles());
+        const result = Code.warmCacheWhenDataReady();
+        expect(result).toEqual({ warmed: true, batchKey: BATCH_KEY });
+        expect(global.CacheService.getScriptCache).toHaveBeenCalled();
+        expect(propertyStore.WARMED_BATCH_KEY).toBe(BATCH_KEY);
+      });
+
+      it('stays a no-op on the next poll of the same batch', () => {
+        mockDataFolder(settledFiles());
+        Code.warmCacheWhenDataReady();
+        vi.clearAllMocks();
+        const result = Code.warmCacheWhenDataReady();
+        expect(result).toEqual({ warmed: false, batchKey: BATCH_KEY });
+        expect(global.CacheService.getScriptCache).not.toHaveBeenCalled();
+      });
+
+      it('does nothing while one monthly file is still missing', () => {
+        mockDataFolder(settledFiles().slice(1));
+        const result = Code.warmCacheWhenDataReady();
+        expect(result.warmed).toBe(false);
+        expect(global.CacheService.getScriptCache).not.toHaveBeenCalled();
+        expect(propertyStore.WARMED_BATCH_KEY).toBeUndefined();
+      });
+
+      it('does nothing while the write burst has not settled yet', () => {
+        const files = settledFiles();
+        files[0] = mfcfFile(files[0].getName().slice(5, 11), NOW_MS - 60 * 1000);
+        mockDataFolder(files);
+        const result = Code.warmCacheWhenDataReady();
+        expect(result.warmed).toBe(false);
+        expect(global.CacheService.getScriptCache).not.toHaveBeenCalled();
+      });
+
+      it('warms again when a midday re-export forms a new batch', () => {
+        mockDataFolder(settledFiles());
+        Code.warmCacheWhenDataReady();
+        const refreshed = monthKeysFrom(NOW_MS).map((yyyymm, i) =>
+          mfcfFile(yyyymm, LATEST_MS + 30 * 60 * 1000 - i * 60 * 1000));
+        mockDataFolder(refreshed);
+        vi.clearAllMocks();
+        const result = Code.warmCacheWhenDataReady();
+        expect(result.warmed).toBe(true);
+        expect(propertyStore.WARMED_BATCH_KEY).toBe(`2026-11-19:${LATEST_MS + 30 * 60 * 1000}`);
+      });
+    });
+
+    describe('installCacheWarmTrigger', () => {
+      it('replaces existing triggers for the same handler and installs a 15-minute one', () => {
+        const deleted = [];
+        const existing = [
+          { getHandlerFunction: () => 'warmCacheWhenDataReady', id: 'old-1' },
+          { getHandlerFunction: () => 'otherHandler', id: 'old-2' },
+        ];
+        const builder = {
+          timeBased: vi.fn().mockReturnThis(),
+          everyMinutes: vi.fn().mockReturnThis(),
+          create: vi.fn(() => ({ getUniqueId: () => 'new-trigger-id' })),
+        };
+        global.ScriptApp = {
+          getProjectTriggers: vi.fn(() => existing),
+          deleteTrigger: vi.fn((trigger) => deleted.push(trigger)),
+          newTrigger: vi.fn(() => builder),
+        };
+
+        const result = Code.installCacheWarmTrigger();
+
+        expect(deleted).toEqual([existing[0]]);
+        expect(global.ScriptApp.newTrigger).toHaveBeenCalledWith('warmCacheWhenDataReady');
+        expect(builder.everyMinutes).toHaveBeenCalledWith(15);
+        expect(result).toEqual({
+          installed: true,
+          handler: 'warmCacheWhenDataReady',
+          triggerId: 'new-trigger-id',
+        });
+      });
     });
   });
 

@@ -1263,6 +1263,143 @@ function serveWarmCache_(parameter) {
   return createJsonResponse_(JSON.stringify(preCacheAll()));
 }
 
+// --- Self-service cache warming (polling) ---
+// The cache used to be warmed by the ping above: the
+// data-refresh job called action=warm_cache right after
+// exporting the mfcf.YYYYMM.xml files. The owner retired
+// that ping as needless cross-machine coupling, so the
+// warming now happens here instead. Apps Script has no
+// Drive change trigger, so a time-driven trigger (every 15
+// minutes) polls the data folder, and once the whole
+// expected set of monthly files has been refreshed today
+// (JST) and the write burst has settled, preCacheAll()
+// runs — at most once per batch. The warmed batch is
+// remembered in the WARMED_BATCH_KEY script property, so
+// repeated polls of the same batch do nothing, while a
+// midday re-export (a new batch) warms again. The
+// token-gated endpoint above stays in place, dormant, as
+// a manual fallback.
+
+const WARMED_BATCH_KEY_PROPERTY = 'WARMED_BATCH_KEY';
+// The refresh window the front end reads: this month plus
+// the previous twelve.
+const MFCF_REFRESH_FILE_COUNT = 13;
+// A batch counts as settled when its newest file is at
+// least this old, so a half-written set is never warmed.
+const WARM_SETTLE_MS = 5 * 60 * 1000;
+
+// 'YYYYMM' keys of the expected monthly files, newest
+// first: the month containing `date` plus the twelve
+// before it.
+export const expectedMfcfMonthKeys_ = (date) => {
+  const keys = [];
+  for (let offset = 0; offset < MFCF_REFRESH_FILE_COUNT; offset += 1) {
+    const month = new Date(date.getFullYear(), date.getMonth() - offset, 1);
+    keys.push(`${month.getFullYear()}${String(month.getMonth() + 1).padStart(2, '0')}`);
+  }
+  return keys;
+};
+
+/**
+ * Decide whether a batch of monthly files is ready to
+ * warm the cache. Pure: takes the last-updated times (ms)
+ * of the expected files that exist, the current time (ms)
+ * and the batch key recorded for the previous warm-up,
+ * and returns { shouldWarm, batchKey }. A batch is ready
+ * when every expected file was updated today (JST), the
+ * newest update is at least WARM_SETTLE_MS old, and the
+ * batch differs from the recorded one. The batch key is
+ * the JST date of the newest update plus that timestamp,
+ * so any re-export (which moves the newest timestamp)
+ * forms a new batch.
+ */
+export function decideCacheWarm_(updatedAtTimesMs, nowMs, recordedBatchKey) {
+  const times = Array.isArray(updatedAtTimesMs) ? updatedAtTimesMs : [];
+  if (times.length !== MFCF_REFRESH_FILE_COUNT || times.some((t) => !Number.isFinite(t))) {
+    return { shouldWarm: false, batchKey: '' };
+  }
+  const latestMs = Math.max(...times);
+  const batchKey = `${dashboardRssJstDateKey_(latestMs)}:${latestMs}`;
+  const todayKey = dashboardRssJstDateKey_(nowMs);
+  const allUpdatedToday = times.every((t) => dashboardRssJstDateKey_(t) === todayKey);
+  const settled = nowMs - latestMs >= WARM_SETTLE_MS;
+  const alreadyWarmed = batchKey === (recordedBatchKey || '');
+  return { shouldWarm: allUpdatedToday && settled && !alreadyWarmed, batchKey };
+}
+
+function setScriptProperty_(key, value) {
+  const properties = getScriptProperties_();
+  if (!properties || !properties.setProperty) {
+    return;
+  }
+  properties.setProperty(key, value);
+}
+
+/**
+ * Polling entry point (time-driven trigger, every 15
+ * minutes; install it once with installCacheWarmTrigger):
+ * when the expected mfcf.YYYYMM.xml files have all been
+ * refreshed today and the writes have settled, rebuild
+ * the aggregated cache with preCacheAll() — the same work
+ * the retired ping used to trigger — and record the batch
+ * so later polls of the same batch stay no-ops. Not ready
+ * (or already warmed) is a quiet no-op, never an error.
+ */
+export function warmCacheWhenDataReady() {
+  try {
+    const now = new Date();
+    const updatedAtTimes = [];
+    expectedMfcfMonthKeys_(now).forEach((yyyymm) => {
+      const file = findDataFile_(`mfcf.${yyyymm}.xml`);
+      if (file) {
+        updatedAtTimes.push(file.getLastUpdated().getTime());
+      }
+    });
+    const decision = decideCacheWarm_(
+      updatedAtTimes,
+      now.getTime(),
+      getScriptProperty_(WARMED_BATCH_KEY_PROPERTY),
+    );
+    if (!decision.shouldWarm) {
+      return { warmed: false, batchKey: decision.batchKey };
+    }
+    preCacheAll();
+    setScriptProperty_(WARMED_BATCH_KEY_PROPERTY, decision.batchKey);
+    return { warmed: true, batchKey: decision.batchKey };
+  } catch (e) {
+    // Polling stays quiet: a transient Drive error is
+    // retried on the next tick instead of failing the
+    // trigger run.
+    Logger.log(`warmCacheWhenDataReady failed: ${e.message}`);
+    return { warmed: false, batchKey: '', error: e.message };
+  }
+}
+
+/**
+ * One-time setup helper: run this once from the Apps
+ * Script editor to (re)install the 15-minute time-driven
+ * trigger for warmCacheWhenDataReady. Existing triggers
+ * for the same handler are removed first. Note the
+ * trigger itself must be installed from the editor —
+ * merges and CI deploys do not create it.
+ */
+export function installCacheWarmTrigger() {
+  ScriptApp.getProjectTriggers()
+    .filter((trigger) => trigger.getHandlerFunction() === 'warmCacheWhenDataReady')
+    .forEach((trigger) => ScriptApp.deleteTrigger(trigger));
+
+  const trigger = ScriptApp.newTrigger('warmCacheWhenDataReady')
+    .timeBased()
+    .everyMinutes(15)
+    .create();
+
+  return {
+    installed: true,
+    handler: 'warmCacheWhenDataReady',
+    triggerId: trigger.getUniqueId(),
+  };
+}
+
 // --- Region weights (look-through regional allocation) ---
 // The front end renders an "effective regional allocation" pie:
 // index funds are split into region buckets (japan / us /
