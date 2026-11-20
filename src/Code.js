@@ -261,13 +261,41 @@ const SNAPSHOT_EXCLUDE_CATEGORY_KEYWORDS = [
   '収入/',
 ];
 
+// Text read from an outside value (a CSV field, a feed entry, a
+// cached JSON field): strings pass through and numbers /
+// booleans stringify as String() always did; anything else —
+// objects, arrays, and values whose toString is not callable
+// (producible via JSON, e.g. {"toString": []}), for which
+// String() throws — reads as empty instead of killing the
+// whole payload or leaking "[object Object]".
+const outsideText_ = (value) =>
+  typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+    ? String(value)
+    : '';
+
 const parseYenValue_ = (value) => {
-  const number = Number(String(value ?? '').replace(/[^0-9.\-]/g, ''));
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : 0;
+  }
+  if (typeof value !== 'string') {
+    return 0;
+  }
+  const number = Number(value.replace(/[^0-9.\-]/g, ''));
+  return Number.isFinite(number) ? number : 0;
+};
+
+// A transaction amount read from an entry: finite numbers and
+// numeric strings count; anything else (booleans, arrays,
+// objects) reads as 0 instead of being coerced into an
+// invented amount by a bare Number().
+const snapshotAmountValue_ = (value) => {
+  const number =
+    typeof value === 'number' ? value : typeof value === 'string' ? Number(value) : 0;
   return Number.isFinite(number) ? number : 0;
 };
 
 export function classifySnapshotExpenseType_(item) {
-  const category = String(item?.category ?? '');
+  const category = outsideText_(item?.category);
 
   if (item?.is_transfer) return 'exclude';
   if (category.startsWith('特別な支出')) return 'exclude';
@@ -304,14 +332,14 @@ export function computeSnapshotAverages_(mfcfEntries, monthKey) {
     if (item?.is_transfer) {
       return;
     }
-    const month = String(item?.date || '').slice(0, 7);
+    const month = outsideText_(item?.date).slice(0, 7);
     if (!windowMonths.has(month)) {
       return;
     }
     if (!monthly[month]) {
       monthly[month] = { income: 0, livingCost: 0 };
     }
-    const amount = Number(item?.amount) || 0;
+    const amount = snapshotAmountValue_(item?.amount);
     if (amount > 0) {
       monthly[month].income += amount;
     } else if (amount < 0) {
@@ -352,7 +380,7 @@ export function computeSnapshotRow_(allData, mfcfEntries, monthKey) {
   breakdown.forEach((row) => {
     const amount = parseYenValue_(row?.amount_yen);
     totalAssets += amount;
-    const category = String(row?.category ?? '');
+    const category = outsideText_(row?.category);
     if (category === SNAPSHOT_CASH_CATEGORY) {
       cash += amount;
     }
@@ -424,11 +452,12 @@ const normalizeSnapshotMonthKey_ = (monthKey) => {
     return formatMonthKey_(new Date());
   }
   const normalized = String(monthKey).trim();
-  if (/^\d{4}-\d{2}$/.test(normalized)) {
+  const dashed = normalized.match(/^(\d{4})-(\d{2})$/);
+  if (dashed && Number(dashed[2]) >= 1 && Number(dashed[2]) <= 12) {
     return normalized;
   }
   const compact = normalized.match(/^(\d{4})(\d{2})$/);
-  if (compact) {
+  if (compact && Number(compact[2]) >= 1 && Number(compact[2]) <= 12) {
     return `${compact[1]}-${compact[2]}`;
   }
   throw new Error(`invalid month key: ${monthKey}`);
@@ -684,7 +713,10 @@ export function applyFormattingRules(data, typeName) {
     return data;
   }
 
-  const activeRule = FORMAT_RULES.find((rule) => rule.match(typeName));
+  // The rule matchers call string methods on the type name;
+  // a non-string name matches no rule instead of throwing.
+  const safeTypeName = typeof typeName === 'string' ? typeName : '';
+  const activeRule = FORMAT_RULES.find((rule) => rule.match(safeTypeName));
 
   return data.map((item) => {
     const clonedItem = { ...item };
@@ -923,6 +955,23 @@ function pickDateText_(description, title, pubDate) {
   return normalizedPubDate;
 }
 
+// Whether (year, month, day) is a date that actually exists
+// on the calendar. Shaped strings such as 2026-02-30 name no
+// real day; letting one through would record a
+// plausible-looking wrong date downstream, so the parsers
+// below reject them instead.
+const isRealCalendarDate_ = (year, month, day) => {
+  if (!Number.isInteger(year) || !Number.isInteger(month) || !Number.isInteger(day)) {
+    return false;
+  }
+  if (month < 1 || month > 12 || day < 1) {
+    return false;
+  }
+  const leap = (year % 4 === 0 && year % 100 !== 0) || year % 400 === 0;
+  const daysInMonth = [31, leap ? 29 : 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
+  return day <= daysInMonth[month - 1];
+};
+
 /**
  * pubDateをYYYY-MM-DD形式に変換する
  */
@@ -940,7 +989,9 @@ function formatDate_(pubDate, defaultYear) {
     const yyyy = explicitYmdMatch[1];
     const mm = explicitYmdMatch[2].padStart(2, '0');
     const dd = explicitYmdMatch[3].padStart(2, '0');
-    return `${yyyy}-${mm}-${dd}`;
+    return isRealCalendarDate_(Number(yyyy), Number(mm), Number(dd))
+      ? `${yyyy}-${mm}-${dd}`
+      : '';
   }
 
   // MM/DD 形式で年が含まれていない場合、defaultYear を付加する
@@ -949,7 +1000,9 @@ function formatDate_(pubDate, defaultYear) {
     const year = fallbackYear || new Date().getFullYear();
     const mm = mmddMatch[1].padStart(2, '0');
     const dd = mmddMatch[2].padStart(2, '0');
-    return `${year}-${mm}-${dd}`;
+    return isRealCalendarDate_(Number(year), Number(mm), Number(dd))
+      ? `${year}-${mm}-${dd}`
+      : '';
   }
 
   try {
@@ -1472,9 +1525,15 @@ export function parseRegionWeightsRows_(rows) {
   }
   const sets = {};
   rows.forEach((row) => {
-    const setName = String(row?.weight_set ?? '').trim();
-    const bucket = String(row?.bucket ?? '').trim();
-    const weight = Number(row?.weight);
+    const setName = outsideText_(row?.weight_set).trim();
+    const bucket = outsideText_(row?.bucket).trim();
+    // Only numbers and numeric strings carry a weight; a bare
+    // Number() would invent one from booleans / arrays and
+    // throw on an unstringifiable object.
+    const weight =
+      typeof row?.weight === 'number' || typeof row?.weight === 'string'
+        ? Number(row.weight)
+        : NaN;
     if (!REGION_WEIGHT_SETS.includes(setName) || !REGION_BUCKETS.includes(bucket)) {
       return;
     }
@@ -1482,7 +1541,7 @@ export function parseRegionWeightsRows_(rows) {
       return;
     }
     if (!sets[setName]) {
-      sets[setName] = { effective_date: String(row?.effective_date ?? '').trim() };
+      sets[setName] = { effective_date: outsideText_(row?.effective_date).trim() };
     }
     sets[setName][bucket] = weight;
   });
@@ -1596,17 +1655,21 @@ const parseFactsheetDate_ = (text) => {
   };
   collect(
     /\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{1,2}),\s*(\d{4})\b/gi,
-    (m) =>
-      Number(m[3]) >= 2020
-        ? `${m[3]}-${REGION_FACTSHEET_MONTHS_[m[1].slice(0, 3).toLowerCase()]}-${String(m[2]).padStart(2, '0')}`
-        : null,
+    (m) => {
+      const month = REGION_FACTSHEET_MONTHS_[m[1].slice(0, 3).toLowerCase()];
+      return Number(m[3]) >= 2020 && isRealCalendarDate_(Number(m[3]), Number(month), Number(m[2]))
+        ? `${m[3]}-${month}-${String(m[2]).padStart(2, '0')}`
+        : null;
+    },
   );
   collect(
     /\b(\d{1,2})\s+(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\s+(\d{4})\b/gi,
-    (m) =>
-      Number(m[3]) >= 2020
-        ? `${m[3]}-${REGION_FACTSHEET_MONTHS_[m[2].slice(0, 3).toLowerCase()]}-${String(m[1]).padStart(2, '0')}`
-        : null,
+    (m) => {
+      const month = REGION_FACTSHEET_MONTHS_[m[2].slice(0, 3).toLowerCase()];
+      return Number(m[3]) >= 2020 && isRealCalendarDate_(Number(m[3]), Number(month), Number(m[1]))
+        ? `${m[3]}-${month}-${String(m[1]).padStart(2, '0')}`
+        : null;
+    },
   );
   let best = null;
   counts.forEach((count, key) => {
@@ -1995,7 +2058,14 @@ const dashboardToPercent_ = (value) => {
 
 const dashboardAsArray_ = (value) => (Array.isArray(value) ? value : []);
 
-const dashboardNormalizeText_ = (value, fallback = '') => String(value ?? fallback).trim();
+// Scalars stringify as String() always did; anything else
+// (objects, arrays, values whose toString is not callable)
+// reads as the fallback instead of throwing.
+const dashboardNormalizeText_ = (value, fallback = '') => {
+  const scalar =
+    typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean';
+  return String(scalar ? value : fallback).trim();
+};
 
 // Pension rows whose 評価損益 is missing get it derived from
 // 現在価値 and 評価損益率, as on the front end.
@@ -2056,13 +2126,13 @@ export function dashboardNormalizePortfolio_(api) {
   const safeApi = api ?? {};
 
   const assetsByClass = dashboardAsArray_(safeApi.breakdown).map((item) => ({
-    name: String(item?.category ?? ''),
+    name: outsideText_(item?.category),
     amountYen: dashboardToNumber_(item?.amount_yen),
     percentage: dashboardToPercent_(item?.percentage),
   }));
 
   const liabilitiesByCategory = dashboardAsArray_(safeApi['breakdown-liability']).map((item) => ({
-    category: String(item?.category ?? ''),
+    category: outsideText_(item?.category),
     amountYen: dashboardToNumber_(item?.amount_yen),
     percentage: dashboardToPercent_(item?.percentage),
   }));
@@ -2105,7 +2175,7 @@ const dashboardGetExpenseType_ = (categoryOrItem) => {
   const isObj = categoryOrItem && typeof categoryOrItem === 'object';
   const isTransfer = isObj ? categoryOrItem.isTransfer : false;
   const rawCategory = isObj ? categoryOrItem.category : categoryOrItem;
-  const category = String(rawCategory ?? '');
+  const category = outsideText_(rawCategory);
 
   if (isTransfer) return 'exclude';
   if (category.startsWith('特別な支出')) return 'exclude';
@@ -2770,7 +2840,7 @@ const dashboardProcessLookbackCashFlow_ = (cashFlow, callback) => {
   const targetMonths = dashboardGetPastMonths_(now, DASHBOARD_TWELVE_MONTH_LOOKBACK_COUNT);
   const monthSet = new Set(targetMonths);
 
-  cashFlow.forEach((item) => {
+  (Array.isArray(cashFlow) ? cashFlow : []).forEach((item) => {
     if (item.isTransfer) return;
     const month = item.date?.substring(0, 7) || '';
     if (!monthSet.has(month)) return;
@@ -3548,7 +3618,9 @@ export function dashboardBuildAssetGoals_({ portfolio, baseParams, startMonthKey
 const dashboardParseMonthKey_ = (monthKey) => {
   const match = /^(\d{4})-(\d{2})$/.exec(String(monthKey ?? ''));
   if (!match) return null;
-  return { year: Number(match[1]), month: Number(match[2]) };
+  const month = Number(match[2]);
+  if (month < 1 || month > 12) return null;
+  return { year: Number(match[1]), month };
 };
 
 const dashboardMonthKeyToIndex_ = (monthKey) => {
