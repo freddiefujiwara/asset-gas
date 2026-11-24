@@ -1152,6 +1152,41 @@ describe('Code.js', () => {
       expect(records[0].last_accessed_at).not.toBe('');
     });
 
+    it('does not rewrite the share file when the last access is recent', () => {
+      const token = 'recent-token';
+      seedShareFile([
+        {
+          token_hash: shareHashOf(token),
+          issued_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 1800_000).toISOString(),
+          revoked_at: '',
+          access_count: 5,
+          last_accessed_at: new Date().toISOString(),
+        },
+      ]);
+      Code.doGet({ parameter: { share_token: token } });
+      expect(lastJson().assetClassRatio).toEqual([{ other: 'val', amount_yen: '20' }]);
+      expect(mockShareFile.setContent).not.toHaveBeenCalled();
+      expect(shareRecords()[0].access_count).toBe(5);
+    });
+
+    it('refreshes the access bookkeeping when the last access is over an hour old', () => {
+      const token = 'stale-token';
+      seedShareFile([
+        {
+          token_hash: shareHashOf(token),
+          issued_at: new Date().toISOString(),
+          expires_at: new Date(Date.now() + 1800_000).toISOString(),
+          revoked_at: '',
+          access_count: 5,
+          last_accessed_at: new Date(Date.now() - 2 * 3600_000).toISOString(),
+        },
+      ]);
+      Code.doGet({ parameter: { share_token: token } });
+      expect(mockShareFile.setContent).toHaveBeenCalled();
+      expect(shareRecords()[0].access_count).toBe(6);
+    });
+
     it('adds the share flag to cached data as well', () => {
       const token = issueToken();
       const cache = global.CacheService.getScriptCache();

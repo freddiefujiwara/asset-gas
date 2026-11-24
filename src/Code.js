@@ -126,13 +126,21 @@ const revokeShareSession_ = () => {
   return { revoked: true };
 };
 
+// The access bookkeeping (access_count / last_accessed_at) is
+// refreshed at most once per this interval per session. Writing the
+// session file back to Drive on every validated request costs
+// seconds in Apps Script, and nothing reads those fields for
+// decisions, so an approximate count is fine.
+const SESSION_ACCESS_WRITE_INTERVAL_MS = 60 * 60 * 1000;
+
 const validateSessionToken_ = (fileName, token) => {
   if (!token) {
     return null;
   }
   const hash = hashShareToken_(token);
   const records = readSessionRecords_(fileName);
-  const nowIso = new Date().toISOString();
+  const now = new Date();
+  const nowIso = now.toISOString();
   for (let index = 0; index < records.length; index += 1) {
     const record = records[index];
     if (record.token_hash !== hash) {
@@ -144,9 +152,15 @@ const validateSessionToken_ = (fileName, token) => {
     if (!record.expires_at || record.expires_at <= nowIso) {
       return null;
     }
-    record.access_count = Number(record.access_count || 0) + 1;
-    record.last_accessed_at = nowIso;
-    writeSessionRecords_(fileName, records);
+    const lastAccessMs = Date.parse(record.last_accessed_at || '');
+    if (
+      !Number.isFinite(lastAccessMs)
+      || now.getTime() - lastAccessMs >= SESSION_ACCESS_WRITE_INTERVAL_MS
+    ) {
+      record.access_count = Number(record.access_count || 0) + 1;
+      record.last_accessed_at = nowIso;
+      writeSessionRecords_(fileName, records);
+    }
     return { expires_at: record.expires_at };
   }
   return null;
