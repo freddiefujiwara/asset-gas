@@ -1,22 +1,42 @@
 openapi: 3.0.0
 info:
-  title: CSV to JSON API
-  version: 1.0.0
-  description: An API to list CSV files in a Google Drive folder and convert them to JSON.
+  title: Asset API
+  version: 1.1.0
+  description: |
+    Web API for the asset dashboard, backed by Google Apps Script.
+    It serves portfolio data assembled from Drive files (CSVs and the
+    monthly money files), plus session and share-link management.
+
+    Every request requires authentication: a verified Google ID token
+    (`id_token`), an owner session token, or a share token. There is no
+    unauthenticated mode.
+
+    The main data read returns the full payload; `scope=activity` is
+    not supported here (that is health-gas). The family configuration
+    (birth dates, owner rules, funds) is NOT in this repository: it
+    lives in the `FAMILY_CONFIG_JSON` script property and is served
+    only to authenticated callers via `action=family_config`.
 servers:
-  - url: https://script.google.com/macros/s/AKfycbxjQAp6rtSCUTz4T5J96_-zCs9Vrae-7uhZXY7ZIukOZP5fs_HIf44aOAfcN3XfPkis
+  - url: https://script.google.com/macros/s/<deployment-id>/exec
+    description: Google Apps Script web app deployment (replace with the actual deployment URL)
 paths:
   /exec:
     get:
-      summary: Get all CSV content as JSON
-      operationId: getCsvData
+      summary: Asset data and account actions
+      operationId: assetGet
       parameters:
         - name: f
           in: query
           schema:
             type: string
             enum: [preCacheAll]
-          description: Function to execute
+          description: Cache warm-up function to execute
+        - name: action
+          in: query
+          schema:
+            type: string
+            enum: [dashboard_rss, warm_cache, exchange_session, revoke_session, issue_share, revoke_share, family_config]
+          description: Account/data action to perform
         - name: id_token
           in: query
           schema:
@@ -28,44 +48,7 @@ paths:
           content:
             application/json:
               schema:
-                oneOf:
-                  - type: object
-                    properties:
-                      mfcf:
-                        type: array
-                        items:
-                          $ref: '#/components/schemas/MfcfEntry'
-                    additionalProperties:
-                      type: array
-                      items:
-                        type: object
-                        additionalProperties: true
-                    description: All CSV contents keyed by filename and XML data under mfcf.
-                  - type: object
-                    properties:
-                      status:
-                        type: boolean
-                    description: Status (when other parameters are provided).
-components:
-  schemas:
-    MfcfEntry:
-      type: object
-      properties:
-        date:
-          type: string
-          description: Transaction date in YYYY-MM-DD format.
-        amount:
-          type: integer
-          description: Transaction amount.
-        currency:
-          type: string
-          description: Currency code (e.g., JPY).
-        name:
-          type: string
-          description: Transaction name.
-        category:
-          type: string
-          description: Transaction category.
-        is_transfer:
-          type: boolean
-          description: Whether the transaction is a transfer.
+                type: object
+                additionalProperties: true
+        '401':
+          description: Missing or invalid credential
