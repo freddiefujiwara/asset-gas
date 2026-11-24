@@ -459,6 +459,8 @@ describe('Code.js', () => {
       'total-liability': [{ other: 'val' }],
       details__portfolio_456: [{ other: 'val' }],
       mfcf: [],
+      mfcfMonthlyLiving: [],
+      mfcfScope: 'full',
       weights: {
         acwi: { japan: 5.08, us: 64.63, developed_other: 19.1, emerging: 11.19, other: 0, effective_date: '2026-10-30' },
         acwi_ex_japan: { japan: 0, us: 68.09, developed_other: 20.12, emerging: 11.79, other: 0, effective_date: '2026-10-30' },
@@ -507,6 +509,7 @@ describe('Code.js', () => {
       cache.get.mockImplementation((key) => {
         if (key === '0') return csvPayload;
         if (key === 'mfcf') return mfcfKeys;
+        if (key === 'mfcfMonthlyLiving') return JSON.stringify([]);
         if (key === 'mfcf.202401') return xmlPayload;
         return null;
       });
@@ -519,6 +522,8 @@ describe('Code.js', () => {
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
         assetClassRatio: [{ cached: true }],
         mfcf: [{ date: '2024-01-01', amount: 100 }],
+        mfcfMonthlyLiving: [],
+        mfcfScope: 'full',
         weights: {
           acwi: { japan: 5.08, us: 64.63, developed_other: 19.1, emerging: 11.19, other: 0, effective_date: '2026-10-30' },
           acwi_ex_japan: { japan: 0, us: 68.09, developed_other: 20.12, emerging: 11.79, other: 0, effective_date: '2026-10-30' },
@@ -529,6 +534,39 @@ describe('Code.js', () => {
       }));
       expect(global.DriveApp.getFolderById).not.toHaveBeenCalled();
       expect(cache.put).not.toHaveBeenCalled();
+    });
+
+    it('should return only the latest two mfcf months for scope=recent', () => {
+      const cache = global.CacheService.getScriptCache();
+      cache.get.mockImplementation((key) => {
+        if (key === '0') return JSON.stringify({ assetClassRatio: [{ cached: true }] });
+        if (key === 'mfcf') return JSON.stringify(['mfcf.202412', 'mfcf.202411', 'mfcf.202410']);
+        if (key === 'mfcfMonthlyLiving') {
+          return JSON.stringify([{ month: '2024-10', byCategory: { '食費': 1000 } }]);
+        }
+        if (key === 'mfcf.202412') return JSON.stringify([{ date: '2024-12-05', amount: -300 }]);
+        if (key === 'mfcf.202411') return JSON.stringify([{ date: '2024-11-05', amount: -200 }]);
+        if (key === 'mfcf.202410') return JSON.stringify([{ date: '2024-10-05', amount: -100 }]);
+        return null;
+      });
+
+      Code.doGet({
+        parameter: { scope: 'recent' },
+        headers: { Authorization: 'Bearer token-value' },
+      });
+
+      const output = JSON.parse(
+        global.ContentService.createTextOutput.mock.calls.at(-1)[0],
+      );
+      expect(output.mfcfScope).toBe('recent');
+      expect(output.mfcf).toEqual([
+        { date: '2024-12-05', amount: -300 },
+        { date: '2024-11-05', amount: -200 },
+      ]);
+      expect(output.mfcfMonthlyLiving).toEqual([
+        { month: '2024-10', byCategory: { '食費': 1000 } },
+      ]);
+      expect(cache.get).not.toHaveBeenCalledWith('mfcf.202410');
     });
 
     it('should bypass cache reads when NO_CACHE is true', () => {
@@ -867,7 +905,7 @@ describe('Code.js', () => {
       expect(global.CacheService.getScriptCache).toHaveBeenCalled();
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
         status: true,
-        cachedKeys: ['0', 'mfcf'],
+        cachedKeys: ['0', 'mfcf', 'mfcfMonthlyLiving'],
       }));
     });
   });
@@ -916,15 +954,17 @@ describe('Code.js', () => {
       const result = Code.preCacheAll();
 
       expect(cache.removeAll).toHaveBeenCalledWith(['mfcf.old']);
-      expect(cache.removeAll).toHaveBeenCalledWith(['0', 'mfcf']);
+      expect(cache.removeAll).toHaveBeenCalledWith(['0', 'mfcf', 'mfcfMonthlyLiving']);
 
       expect(cache.put).toHaveBeenCalledWith('0', expect.any(String), 21600);
       expect(cache.put).toHaveBeenCalledWith('mfcf', JSON.stringify(['mfcf.202601']), 21600);
+      expect(cache.put).toHaveBeenCalledWith('mfcfMonthlyLiving', expect.any(String), 21600);
       expect(cache.put).toHaveBeenCalledWith('mfcf.202601', expect.stringContaining('TEST1'), 21600);
 
       expect(result.status).toBe(true);
       expect(result.cachedKeys).toContain('0');
       expect(result.cachedKeys).toContain('mfcf');
+      expect(result.cachedKeys).toContain('mfcfMonthlyLiving');
       expect(result.cachedKeys).toContain('mfcf.202601');
     });
   });
@@ -1193,6 +1233,7 @@ describe('Code.js', () => {
       cache.get.mockImplementation((key) => {
         if (key === '0') return JSON.stringify({ assetClassRatio: [{ cached: true }] });
         if (key === 'mfcf') return JSON.stringify([]);
+        if (key === 'mfcfMonthlyLiving') return JSON.stringify([]);
         return null;
       });
       Code.doGet({ parameter: { share_token: token } });
@@ -1648,7 +1689,7 @@ describe('Code.js', () => {
       Code.doGet({ parameter: { action: 'warm_cache', token: 'expected-token' } });
       expect(global.CacheService.getScriptCache).toHaveBeenCalled();
       const payload = JSON.parse(global.ContentService.createTextOutput.mock.calls.at(-1)[0]);
-      expect(payload).toEqual({ status: true, cachedKeys: ['0', 'mfcf'] });
+      expect(payload).toEqual({ status: true, cachedKeys: ['0', 'mfcf', 'mfcfMonthlyLiving'] });
     });
   });
 

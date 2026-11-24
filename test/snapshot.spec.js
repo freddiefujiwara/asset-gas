@@ -289,6 +289,28 @@ describe('Monthly snapshots', () => {
     });
   });
 
+  describe('buildMfcfMonthlyLiving_', () => {
+    it('aggregates living cost by month and large category', () => {
+      const result = Code.buildMfcfMonthlyLiving_([
+        { date: '2026-01-10', amount: -1000, category: '食費/食料品', is_transfer: false },
+        { date: '2026-01-11', amount: -500, category: '交通費', is_transfer: false },
+        { date: '2026-01-12', amount: -9999, category: '特別な支出/旅行', is_transfer: false },
+        { date: '2026-01-13', amount: 3000, category: '収入/給与', is_transfer: false },
+        { date: '2026-01-14', amount: -700, category: '食費/食費', is_transfer: true },
+        { date: '2025-12-01', amount: -200, category: '日用品/日用品', is_transfer: false },
+      ]);
+      expect(result).toEqual([
+        { month: '2025-12', byCategory: { '日用品': 200 } },
+        { month: '2026-01', byCategory: { '食費': 1000, '交通費': 500 } },
+      ]);
+    });
+
+    it('returns an empty array for no entries', () => {
+      expect(Code.buildMfcfMonthlyLiving_([])).toEqual([]);
+      expect(Code.buildMfcfMonthlyLiving_(null)).toEqual([]);
+    });
+  });
+
   describe('classifySnapshotExpenseType_', () => {
     it('mirrors the client classification rules', () => {
       expect(Code.classifySnapshotExpenseType_({ category: '住宅/ローン返済', is_transfer: false })).toBe('fixed');
