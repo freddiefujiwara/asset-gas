@@ -556,13 +556,14 @@ export function preCacheAll() {
   const xmlDataByMonth = getAllXmlDataEntriesByMonth_();
   const mfcfKeys = xmlDataByMonth.map((item) => item.key);
   const allXmlEntries = xmlDataByMonth.flatMap((item) => item.entries);
+  const monthlyLiving = buildMfcfMonthlyLiving_(allXmlEntries);
 
   cache.removeAll(['0', 'mfcf', 'mfcfMonthlyLiving']);
   cache.put('0', JSON.stringify(allData), MAX_CACHE_DURATION_SECONDS);
   cache.put('mfcf', JSON.stringify(mfcfKeys), MAX_CACHE_DURATION_SECONDS);
   cache.put(
     'mfcfMonthlyLiving',
-    JSON.stringify(buildMfcfMonthlyLiving_(allXmlEntries)),
+    JSON.stringify(monthlyLiving),
     MAX_CACHE_DURATION_SECONDS,
   );
 
@@ -570,10 +571,108 @@ export function preCacheAll() {
     cache.put(item.key, JSON.stringify(item.entries), MAX_CACHE_DURATION_SECONDS);
   });
 
+  const payloadKeys = cacheAssembledPayloads_(cache, allData, allXmlEntries, monthlyLiving);
+
   return {
     status: true,
-    cachedKeys: ['0', 'mfcf', 'mfcfMonthlyLiving', ...mfcfKeys],
+    cachedKeys: ['0', 'mfcf', 'mfcfMonthlyLiving', ...mfcfKeys, ...payloadKeys],
   };
+}
+
+// --- Assembled payload cache ---
+// On top of the per-part caches above, the two response bodies
+// (full / recent) are cached as ready-made JSON strings, split
+// into chunks because CacheService caps one value at 100KB.
+// doGet then only concatenates the chunks and injects the
+// request-dependent flags (no_cache / _share) instead of parsing
+// and re-stringifying hundreds of KB per request. Chunk size is
+// in characters; even at 3 bytes per character a chunk stays
+// under the 100KB cap.
+const PAYLOAD_CHUNK_CHARS = 30000;
+const PAYLOAD_META_KEY = 'payload:meta';
+const payloadChunkKey_ = (scope, index) => `payload:${scope}:${index}`;
+
+export function splitPayloadChunks_(json) {
+  const chunks = [];
+  for (let start = 0; start < json.length; start += PAYLOAD_CHUNK_CHARS) {
+    chunks.push(json.slice(start, start + PAYLOAD_CHUNK_CHARS));
+  }
+  return chunks.length > 0 ? chunks : [''];
+}
+
+function cacheAssembledPayloads_(cache, allData, allXmlEntries, monthlyLiving) {
+  // Drop the previous chunks first so a shrinking payload cannot
+  // leave stale tail chunks behind.
+  const oldMetaRaw = cache.get(PAYLOAD_META_KEY);
+  if (oldMetaRaw) {
+    try {
+      const oldMeta = JSON.parse(oldMetaRaw);
+      const oldKeys = [];
+      ['full', 'recent'].forEach((scope) => {
+        const count = Number(oldMeta?.[scope]) || 0;
+        for (let index = 0; index < count; index += 1) {
+          oldKeys.push(payloadChunkKey_(scope, index));
+        }
+      });
+      if (oldKeys.length > 0) {
+        cache.removeAll(oldKeys);
+      }
+    } catch (e) {
+      // パース失敗は無視
+    }
+  }
+
+  const writtenKeys = [PAYLOAD_META_KEY];
+  const meta = {};
+  ['full', 'recent'].forEach((scope) => {
+    const json = JSON.stringify(attachMfcfEntries_(allData, allXmlEntries, scope, monthlyLiving));
+    const chunks = splitPayloadChunks_(json);
+    chunks.forEach((chunk, index) => {
+      const key = payloadChunkKey_(scope, index);
+      cache.put(key, chunk, MAX_CACHE_DURATION_SECONDS);
+      writtenKeys.push(key);
+    });
+    meta[scope] = chunks.length;
+  });
+  cache.put(PAYLOAD_META_KEY, JSON.stringify(meta), MAX_CACHE_DURATION_SECONDS);
+  return writtenKeys;
+}
+
+// The assembled response JSON for the scope, or null when the
+// payload cache is incomplete (caller falls back to the parts).
+function getAssembledPayloadJson_(scope) {
+  const metaRaw = getCacheValue_(PAYLOAD_META_KEY);
+  if (metaRaw === null) {
+    return null;
+  }
+  try {
+    const meta = JSON.parse(metaRaw);
+    const count = Number(meta?.[scope]) || 0;
+    if (count <= 0) {
+      return null;
+    }
+    let json = '';
+    for (let index = 0; index < count; index += 1) {
+      const chunk = getCacheValue_(payloadChunkKey_(scope, index));
+      if (chunk === null) {
+        return null;
+      }
+      json += chunk;
+    }
+    return json;
+  } catch (e) {
+    return null;
+  }
+}
+
+// Inject the request-dependent flags into an assembled payload
+// string: the cached body deliberately omits no_cache and _share
+// (compare withNoCacheFlag_ / withShareFlag_ on the object path).
+function injectResponseFlags_(json, shareSession) {
+  const flags = shareSession
+    ? `,"no_cache":false,"_share":{"expires_at":${JSON.stringify(shareSession.expires_at)}}`
+    : ',"no_cache":false';
+  return `${json.slice(0, -1)}${flags}}`;
 }
 
 export function doGet(e) {
@@ -649,6 +748,11 @@ export function doGet(e) {
 
     if (isNoCacheMode_()) {
       return createLiveDataResponse_(shareSession, scope);
+    }
+
+    const assembledJson = getAssembledPayloadJson_(scope);
+    if (assembledJson !== null) {
+      return createJsonResponse_(injectResponseFlags_(assembledJson, shareSession));
     }
 
     const cachedData = getAggregatedCachedData_(scope);

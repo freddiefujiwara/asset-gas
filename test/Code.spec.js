@@ -569,6 +569,56 @@ describe('Code.js', () => {
       expect(cache.get).not.toHaveBeenCalledWith('mfcf.202410');
     });
 
+    it('should serve the assembled payload cache when present', () => {
+      const cache = global.CacheService.getScriptCache();
+      cache.get.mockImplementation((key) => {
+        if (key === 'payload:meta') return JSON.stringify({ full: 1, recent: 2 });
+        if (key === 'payload:recent:0') return '{"assetClassRatio":[{"cached":true}],"mfcf":[],"mfcfScope":"rec';
+        if (key === 'payload:recent:1') return 'ent","mfcfMonthlyLiving":[]}';
+        return null;
+      });
+
+      Code.doGet({
+        parameter: { scope: 'recent' },
+        headers: { Authorization: 'Bearer <redacted>' },
+      });
+
+      const output = JSON.parse(
+        global.ContentService.createTextOutput.mock.calls.at(-1)[0],
+      );
+      expect(output).toEqual({
+        assetClassRatio: [{ cached: true }],
+        mfcf: [],
+        mfcfScope: 'recent',
+        mfcfMonthlyLiving: [],
+        no_cache: false,
+      });
+      expect(global.DriveApp.getFolderById).not.toHaveBeenCalled();
+    });
+
+    it('should fall back to part caches when an assembled chunk is missing', () => {
+      const cache = global.CacheService.getScriptCache();
+      cache.get.mockImplementation((key) => {
+        if (key === 'payload:meta') return JSON.stringify({ full: 1, recent: 2 });
+        if (key === 'payload:recent:0') return '{"partial":true';
+        if (key === '0') return JSON.stringify({ assetClassRatio: [{ cached: true }] });
+        if (key === 'mfcf') return JSON.stringify([]);
+        if (key === 'mfcfMonthlyLiving') return JSON.stringify([]);
+        return null;
+      });
+
+      Code.doGet({
+        parameter: { scope: 'recent' },
+        headers: { Authorization: 'Bearer <redacted>' },
+      });
+
+      const output = JSON.parse(
+        global.ContentService.createTextOutput.mock.calls.at(-1)[0],
+      );
+      expect(output.assetClassRatio).toEqual([{ cached: true }]);
+      expect(output.mfcfScope).toBe('recent');
+    });
+
     it('should bypass cache reads when NO_CACHE is true', () => {
       scriptProperties.NO_CACHE = 'true';
       const cache = global.CacheService.getScriptCache();
@@ -905,7 +955,7 @@ describe('Code.js', () => {
       expect(global.CacheService.getScriptCache).toHaveBeenCalled();
       expect(global.ContentService.createTextOutput).toHaveBeenCalledWith(JSON.stringify({
         status: true,
-        cachedKeys: ['0', 'mfcf', 'mfcfMonthlyLiving'],
+        cachedKeys: ['0', 'mfcf', 'mfcfMonthlyLiving', 'payload:meta', 'payload:full:0', 'payload:recent:0'],
       }));
     });
   });
@@ -966,6 +1016,23 @@ describe('Code.js', () => {
       expect(result.cachedKeys).toContain('mfcf');
       expect(result.cachedKeys).toContain('mfcfMonthlyLiving');
       expect(result.cachedKeys).toContain('mfcf.202601');
+      expect(cache.put).toHaveBeenCalledWith('payload:meta', JSON.stringify({ full: 1, recent: 1 }), 21600);
+      expect(cache.put).toHaveBeenCalledWith('payload:full:0', expect.stringContaining('TEST1'), 21600);
+      expect(cache.put).toHaveBeenCalledWith('payload:recent:0', expect.stringContaining('TEST1'), 21600);
+      expect(result.cachedKeys).toContain('payload:meta');
+      expect(result.cachedKeys).toContain('payload:full:0');
+      expect(result.cachedKeys).toContain('payload:recent:0');
+    });
+  });
+
+  describe('splitPayloadChunks_', () => {
+    it('returns one chunk for a short string and round-trips a long one', () => {
+      expect(Code.splitPayloadChunks_('{"a":1}')).toEqual(['{"a":1}']);
+      const long = 'x'.repeat(30001);
+      const chunks = Code.splitPayloadChunks_(long);
+      expect(chunks).toHaveLength(2);
+      expect(chunks.join('')).toBe(long);
+      expect(Code.splitPayloadChunks_('')).toEqual(['']);
     });
   });
 
@@ -1689,7 +1756,7 @@ describe('Code.js', () => {
       Code.doGet({ parameter: { action: 'warm_cache', token: 'expected-token' } });
       expect(global.CacheService.getScriptCache).toHaveBeenCalled();
       const payload = JSON.parse(global.ContentService.createTextOutput.mock.calls.at(-1)[0]);
-      expect(payload).toEqual({ status: true, cachedKeys: ['0', 'mfcf', 'mfcfMonthlyLiving'] });
+      expect(payload).toEqual({ status: true, cachedKeys: ['0', 'mfcf', 'mfcfMonthlyLiving', 'payload:meta', 'payload:full:0', 'payload:recent:0'] });
     });
   });
 
