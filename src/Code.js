@@ -555,10 +555,16 @@ export function preCacheAll() {
   const allData = entriesToObject_(allEntries);
   const xmlDataByMonth = getAllXmlDataEntriesByMonth_();
   const mfcfKeys = xmlDataByMonth.map((item) => item.key);
+  const allXmlEntries = xmlDataByMonth.flatMap((item) => item.entries);
 
-  cache.removeAll(['0', 'mfcf']);
+  cache.removeAll(['0', 'mfcf', 'mfcfMonthlyLiving']);
   cache.put('0', JSON.stringify(allData), MAX_CACHE_DURATION_SECONDS);
   cache.put('mfcf', JSON.stringify(mfcfKeys), MAX_CACHE_DURATION_SECONDS);
+  cache.put(
+    'mfcfMonthlyLiving',
+    JSON.stringify(buildMfcfMonthlyLiving_(allXmlEntries)),
+    MAX_CACHE_DURATION_SECONDS,
+  );
 
   xmlDataByMonth.forEach((item) => {
     cache.put(item.key, JSON.stringify(item.entries), MAX_CACHE_DURATION_SECONDS);
@@ -566,7 +572,7 @@ export function preCacheAll() {
 
   return {
     status: true,
-    cachedKeys: ['0', 'mfcf', ...mfcfKeys],
+    cachedKeys: ['0', 'mfcf', 'mfcfMonthlyLiving', ...mfcfKeys],
   };
 }
 
@@ -635,18 +641,24 @@ export function doGet(e) {
       return createJsonResponse_(JSON.stringify(preCacheAll()));
     }
 
+    // scope=recent narrows the mfcf rows to the latest two months
+    // (the home screen's range); the trailing-12-month living-cost
+    // totals still travel in mfcfMonthlyLiving. Anything else
+    // (including no scope) is the full response, as before.
+    const scope = parameters?.scope === 'recent' ? 'recent' : 'full';
+
     if (isNoCacheMode_()) {
-      return createLiveDataResponse_(shareSession);
+      return createLiveDataResponse_(shareSession, scope);
     }
 
-    const cachedData = getAggregatedCachedData_();
+    const cachedData = getAggregatedCachedData_(scope);
     if (cachedData !== null) {
       return createJsonResponse_(
         JSON.stringify(withShareFlag_(withNoCacheFlag_(cachedData, false), shareSession)),
       );
     }
 
-    return createLiveDataResponse_(shareSession);
+    return createLiveDataResponse_(shareSession, scope);
   } catch (error) {
     const message = error?.message || 'unauthorized';
     const status = message === 'forbidden email' ? 403 : 401;
@@ -655,37 +667,50 @@ export function doGet(e) {
 }
 
 
-function createLiveDataResponse_(shareSession) {
+function createLiveDataResponse_(shareSession, scope = 'full') {
   const allData = getAllCsvDataInFolder_();
   return createJsonResponse_(
     JSON.stringify(
       withShareFlag_(
-        withNoCacheFlag_(attachMfcfEntries_(allData, getAllXmlDataEntries_()), true),
+        withNoCacheFlag_(attachMfcfEntries_(allData, getAllXmlDataEntries_(), scope), true),
         shareSession,
       ),
     ),
   );
 }
 
-function getAggregatedCachedData_() {
+function getAggregatedCachedData_(scope = 'full') {
   const cachedCsvData = getCacheValue_('0');
   const cachedMfcfKeysRaw = getCacheValue_('mfcf');
+  const cachedMonthlyLivingRaw = getCacheValue_('mfcfMonthlyLiving');
 
-  if (cachedCsvData === null || cachedMfcfKeysRaw === null) {
+  if (cachedCsvData === null || cachedMfcfKeysRaw === null || cachedMonthlyLivingRaw === null) {
     return null;
   }
 
   try {
     const allData = JSON.parse(cachedCsvData);
     const mfcfKeys = JSON.parse(cachedMfcfKeysRaw);
+    const monthlyLiving = JSON.parse(cachedMonthlyLivingRaw);
 
-    if (!Array.isArray(mfcfKeys)) {
+    if (!Array.isArray(mfcfKeys) || !Array.isArray(monthlyLiving)) {
       return null;
+    }
+
+    // The month keys are 'mfcf.YYYYMM'. The recent scope only reads
+    // the latest two months; the older months still contribute
+    // through the cached mfcfMonthlyLiving aggregate.
+    let keysToRead = mfcfKeys;
+    if (scope === 'recent' && mfcfKeys.length > 0) {
+      const latestKey = mfcfKeys.reduce((a, b) => (a > b ? a : b));
+      const latestMonth = `${latestKey.slice(5, 9)}-${latestKey.slice(9, 11)}`;
+      const earliestKey = `mfcf.${dashboardAddMonthsToMonthKey_(latestMonth, -1).replace('-', '')}`;
+      keysToRead = mfcfKeys.filter((key) => key >= earliestKey && key <= latestKey);
     }
 
     let allXmlEntries = [];
 
-    for (const key of mfcfKeys) {
+    for (const key of keysToRead) {
       const monthDataRaw = getCacheValue_(key);
       if (monthDataRaw === null) {
         return null;
@@ -693,19 +718,68 @@ function getAggregatedCachedData_() {
       allXmlEntries = allXmlEntries.concat(JSON.parse(monthDataRaw));
     }
 
-    return attachMfcfEntries_(allData, allXmlEntries);
+    return attachMfcfEntries_(allData, allXmlEntries, scope, monthlyLiving);
   } catch (e) {
     // パース失敗などは無視してライブデータ取得へ
     return null;
   }
 }
 
-function attachMfcfEntries_(allData, mfcfEntries) {
+function attachMfcfEntries_(allData, mfcfEntries, scope = 'full', monthlyLiving = null) {
+  const allEntries = Array.isArray(mfcfEntries) ? mfcfEntries : [];
   return {
     ...allData,
-    mfcf: mfcfEntries,
+    mfcf: scope === 'recent' ? filterRecentMfcfEntries_(allEntries) : allEntries,
+    mfcfMonthlyLiving: monthlyLiving ?? buildMfcfMonthlyLiving_(allEntries),
+    mfcfScope: scope === 'recent' ? 'recent' : 'full',
     weights: buildRegionWeights_(allData ? allData[REGION_WEIGHTS_KEY] : null),
   };
+}
+
+// Keep only the entries of the latest two months present in the
+// data (the home screen's range: this month and last month).
+function filterRecentMfcfEntries_(entries) {
+  const monthOf = (item) => outsideText_(item?.date).slice(0, 7);
+  const months = entries.map(monthOf).filter((month) => /^\d{4}-\d{2}$/.test(month));
+  if (months.length === 0) {
+    return [];
+  }
+  const latest = months.reduce((a, b) => (a > b ? a : b));
+  const earliest = dashboardAddMonthsToMonthKey_(latest, -1);
+  return entries.filter((item) => {
+    const month = monthOf(item);
+    return month >= earliest && month <= latest;
+  });
+}
+
+// Trailing living-cost totals by month and large category, using
+// the same classification as the monthly snapshots (which mirrors
+// the client-side rules). Lets the client compute its 12-month
+// living-cost averages without downloading every mfcf row.
+export function buildMfcfMonthlyLiving_(entries) {
+  const byMonth = {};
+  (Array.isArray(entries) ? entries : []).forEach((item) => {
+    const amount = snapshotAmountValue_(item?.amount);
+    if (amount >= 0) {
+      return;
+    }
+    if (classifySnapshotExpenseType_(item) === 'exclude') {
+      return;
+    }
+    const month = outsideText_(item?.date).slice(0, 7);
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      return;
+    }
+    const largeCategory = outsideText_(item?.category).split('/')[0] || '未分類';
+    if (!byMonth[month]) {
+      byMonth[month] = {};
+    }
+    byMonth[month][largeCategory] =
+      (byMonth[month][largeCategory] || 0) + Math.abs(amount);
+  });
+  return Object.keys(byMonth)
+    .sort()
+    .map((month) => ({ month, byCategory: byMonth[month] }));
 }
 
 /**
