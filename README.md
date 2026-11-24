@@ -39,7 +39,7 @@ This project solves these practical problems:
 - **Inconsistent naming**: e.g., one file has `y` but consumers want `amount_yen`.
 - **Date inconsistency in XML feed**: transaction date can appear in title, description, or pubDate.
 - **Performance pressure**: reading many Drive files on every request is expensive.
-- **Access control requirement**: API should only allow specific Google accounts (except debug mode).
+- **Access control requirement**: API should only allow specific Google accounts.
 
 ---
 
@@ -77,7 +77,7 @@ This project solves these practical problems:
 ### 2.3 Data Flow (Normal Request)
 
 1. Client sends `GET /exec`.
-2. If not debug mode, ID token is extracted and verified.
+2. The caller's credential is verified (Google ID token, owner session token, or share token).
 3. If no functional query params (except optional `id_token`):
    - Try to load full response from cache keys.
    - If cache incomplete/invalid, load live data from Drive.
@@ -110,7 +110,7 @@ This project solves these practical problems:
 
 By default, authentication is **required**.
 
-Authentication is skipped only if script property `DEBUG=true`.
+There is no bypass: every request must present a verified Google ID token, a valid owner session token, or a valid share token.
 
 When required, token verification must pass all checks:
 
@@ -409,7 +409,7 @@ On default request:
 
 1. Read query params from event.
 2. If `f=preCacheAll`, execute cache warm and return.
-3. If not debug mode, perform token verification pipeline.
+3. Perform token verification pipeline.
 4. If request has no functional params:
    1. Try full cache hydration.
    2. If success, return cached merged object.
@@ -577,7 +577,7 @@ Why chosen:
 
 Configuration is read from **Script Properties** (Apps Script).
 
-Required properties for normal (non-debug) operation:
+Required properties:
 
 - `GOOGLE_OAUTH_CLIENT_ID`
   - expected audience value for ID token verification.
@@ -587,9 +587,6 @@ Required properties for normal (non-debug) operation:
 
 Optional properties:
 
-- `DEBUG`
-  - `true` disables auth checks.
-  - any other value keeps auth enabled.
 - `NO_CACHE`
   - `true` bypasses cache reads in `doGet` and always loads from Drive.
   - any other value keeps normal cache-read behavior.
@@ -685,11 +682,6 @@ Uses Google endpoint:
 - `https://oauth2.googleapis.com/tokeninfo?id_token=<token>`
 
 Because this is remote verification, app requires external request scope.
-
-## 11.3 Debug mode caution
-
-If `DEBUG=true`, auth is fully bypassed.
-Use only in safe development contexts.
 
 ---
 
